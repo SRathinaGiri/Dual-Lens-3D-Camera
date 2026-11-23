@@ -12,6 +12,13 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-23 - Release 0.76.1
+
+- Version 0.76.1 (versionCode 10), containing the recording-stop and encoder-size fix below.
+- `:app:assembleRelease :app:testAgentUnitTest :app:lintRelease` pass; `apksigner` confirms the v2
+  signature with the fork's release certificate (SHA-256 `b9661ab3…6df6d`), so it updates 0.76.0
+  in place.
+
 ## 2026-11-23 - Unplayable `.pending-` videos: encoder size limit and crash on stop
 
 **Symptom.** Three 30–50 s recordings on the Redmi Note 12 Pro were left as
