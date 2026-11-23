@@ -57,6 +57,7 @@ object AppSettings {
     const val KEY_STEREO_CORRECTION = "stereo_correction"     // align + colour match + window
     const val KEY_STEREO_CROSS_EYED = "stereo_cross_eyed"     // SBS as R|L instead of L|R
     const val KEY_STEREO_SWAP_EYES = "stereo_swap_eyes"       // flip the default eye assignment
+    const val KEY_PREVIEW_3D_MODE = "preview_3d_mode"         // StereoCameraController.Preview3dMode name
 
     // Debugging (Advanced)
     const val KEY_DEBUG_VIDEO_LOG_ENABLED = "debug_video_log_enabled"

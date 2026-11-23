@@ -52,7 +52,14 @@ class StereoCameraController(
         fun onRecordingStarted()
         fun onRecordingStopped()
         fun onPhotoCaptureDone()
+        /** A live 3D preview frame (called on a background thread). */
+        fun onPreview3dFrame(bitmap: android.graphics.Bitmap) {}
+        /** The phone refused the extra stream needed for live 3D preview. */
+        fun onPreview3dUnavailable() {}
     }
+
+    /** Live preview modes. */
+    enum class Preview3dMode { OFF, SIDE_BY_SIDE, ANAGLYPH }
 
     data class PreviewConfig(
         val previewSize: Size,
@@ -254,6 +261,12 @@ class StereoCameraController(
     // original layout (ultrawide left) until verified.
     @Volatile private var wideIsLeftByDefault: Boolean = false
 
+    // Live 3D preview (photo session only; recording shows the normal preview).
+    @Volatile private var preview3dMode: Preview3dMode = Preview3dMode.OFF
+    private var live3d: LivePreview3d? = null
+    // The surface the current session uses as "preview" (TextureView, or the live 3D wide reader).
+    private var sessionPreviewTarget: Surface? = null
+
 
     // Ultrawide priming (settings)
     // OFF by default. When enabled, we fire one ultrawide-only discarded capture when the
@@ -385,6 +398,21 @@ class StereoCameraController(
 
     fun setPhotoSaveIndividualLensImages(enabled: Boolean) {
         this.saveIndividualLensImages = enabled
+    }
+
+    /** Switches the live preview; rebuilds the photo session when the camera is running. */
+    fun setPreview3dMode(mode: Preview3dMode) {
+        if (preview3dMode == mode) return
+        preview3dMode = mode
+        val handler = cameraHandler ?: return
+        handler.post {
+            if (!isRecording && cameraDevice != null && previewSurface != null) createPreviewSession()
+        }
+    }
+
+    private fun closeLive3d() {
+        try { live3d?.close() } catch (_: Exception) {}
+        live3d = null
     }
 
     fun setStereoOutput(correction: Boolean, crossEyed: Boolean, swapEyes: Boolean) {
@@ -537,6 +565,8 @@ class StereoCameraController(
             cameraDevice = null
 
             closeReaders()
+            closeLive3d()
+            sessionPreviewTarget = null
 
             try { previewSurface?.release() } catch (_: Exception) {}
             previewSurface = null
@@ -1135,7 +1165,7 @@ class StereoCameraController(
 
         val camera = cameraDevice ?: return
         val handler = requireNotNull(cameraHandler)
-        val preview = previewSurface ?: return
+        val textureSurface = previewSurface ?: return
 
         try { session?.close() } catch (_: Exception) {}
         session = null
@@ -1145,6 +1175,37 @@ class StereoCameraController(
         cancelPrimeUwLocked()
 
         closeReaders()
+        closeLive3d()
+
+        // Live 3D preview: small wide + ultrawide YUV streams replace the TextureView stream, so the
+        // session uses 4 outputs instead of 3. If the phone refuses, we fall back below.
+        val mode3d = preview3dMode
+        if (mode3d != Preview3dMode.OFF) {
+            val wideSmall = LivePreview3d.pickSmallSize(
+                wideChars?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.YUV_420_888))
+            val ultraSmall = LivePreview3d.pickSmallSize(
+                ultraChars?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.YUV_420_888))
+            if (wideSmall != null && ultraSmall != null) {
+                val jpegRot = computeJpegOrientation()
+                live3d = LivePreview3d(
+                    wideSize = wideSmall,
+                    ultraSize = ultraSmall,
+                    rotationDegrees = jpegRot,
+                    displayRotationDegrees = (sensorOrientation - jpegRot + 360) % 360,
+                    wideIsLeft = wideIsLeftByDefault != stereoSwapEyes,
+                    crossEyed = stereoCrossEyed,
+                    anaglyph = mode3d == Preview3dMode.ANAGLYPH,
+                    defaultScale = 1.0 / ultra3aFraction,
+                    sink = { bmp -> callback.onPreview3dFrame(bmp) }
+                )
+                Log.i(TAG, "Live 3D preview: wide=$wideSmall ultra=$ultraSmall mode=$mode3d")
+            } else {
+                Log.w(TAG, "Live 3D preview: no small YUV sizes; staying 2D")
+            }
+        }
+        val live = live3d
+        val preview = live?.wideSurface ?: textureSurface
+        sessionPreviewTarget = preview
 
         val raw = if (!phoneIsAPixel && isRawMode) {
             callback.onStatus("RAW/DNG disabled on Samsung for now (YUV only).")
@@ -1177,8 +1238,9 @@ class StereoCameraController(
             setOnImageAvailableListener({ reader -> onStillImageAvailable(isWide = false, reader = reader) }, handler)
         }
 
-        val outputs = ArrayList<OutputConfiguration>(3).apply {
+        val outputs = ArrayList<OutputConfiguration>(4).apply {
             add(OutputConfiguration(preview).apply { setPhysicalCameraId(widePhysicalId) })
+            if (live != null) add(OutputConfiguration(live.ultraSurface).apply { setPhysicalCameraId(ultraPhysicalId) })
             add(OutputConfiguration(requireNotNull(wideReader).surface).apply { setPhysicalCameraId(widePhysicalId) })
             add(OutputConfiguration(requireNotNull(ultraReader).surface).apply { setPhysicalCameraId(ultraPhysicalId) })
         }
@@ -1191,6 +1253,7 @@ class StereoCameraController(
                     try {
                         val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                             addTarget(preview)
+                            if (live != null) addTarget(live.ultraSurface)
                             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
 
@@ -1228,6 +1291,14 @@ class StereoCameraController(
                 }
 
                 override fun onConfigureFailed(sess: CameraCaptureSession) {
+                    if (live != null) {
+                        // The extra stream was refused: go back to the normal preview.
+                        Log.w(TAG, "Live 3D preview session refused; falling back to 2D")
+                        preview3dMode = Preview3dMode.OFF
+                        callback.onPreview3dUnavailable()
+                        handler.post { createPreviewSession() }
+                        return
+                    }
                     callback.onError("Preview session configure failed.")
                 }
             },
@@ -1347,6 +1418,8 @@ class StereoCameraController(
         try { session?.close() } catch (_: Exception) {}
         session = null
         repeatingBuilder = null
+        closeLive3d()
+        sessionPreviewTarget = preview
 
         val outputs = ArrayList<OutputConfiguration>(3).apply {
             add(OutputConfiguration(preview).apply { setPhysicalCameraId(widePhysicalId) })
@@ -1500,7 +1573,8 @@ class StereoCameraController(
         }
 
         val samsungMode = !phoneIsAPixel
-        val preview = previewSurface
+        // Must be a surface of the current session (the live 3D wide reader when 3D preview is on).
+        val preview = sessionPreviewTarget ?: previewSurface
 
         // For watchdog to avoid nuking a later capture
         val capAtStart = currentPhoto

@@ -458,6 +458,17 @@ object StereoSbs {
     // -------------------- Stereo-corrected SBS (tools/stereo_fix port) --------------------
 
     /**
+     * Last good photo alignment (ultrawide -> wide similarity plus window shift, in rotated still
+     * pixels). The live 3D preview reuses it, scaled to its small frames.
+     */
+    data class Alignment(
+        val a: Double, val b: Double, val tx: Double, val ty: Double,
+        val wideW: Int, val wideH: Int, val ultraW: Int, val ultraH: Int
+    )
+
+    @Volatile var lastAlignment: Alignment? = null
+
+    /**
      * Builds a stereo-corrected SBS JPEG, following tools/stereo_fix:
      * SIFT matches -> RANSAC similarity -> vertical-only refinement with ultrawide k1 distortion
      * (StereoAlignMath) -> stereo window -> single initUndistortRectifyMap warp -> Lab histogram
@@ -518,6 +529,7 @@ object StereoSbs {
             val d = StereoAlignMath.horizontalOffsets(refX, fit.corrX, fit.corrY, m.a, m.b)
             val dIn = d.filterIndexed { i, _ -> fit.inliers[i] }.toDoubleArray()
             val tx = StereoAlignMath.windowShift(dIn, wideIsLeft, windowPercentile)
+            lastAlignment = Alignment(m.a, m.b, tx, m.ty, wW, wH, uW, uH)
 
             // 4) One warp: undistort ultrawide (k1) and map into wide geometry.
             val r = m.r

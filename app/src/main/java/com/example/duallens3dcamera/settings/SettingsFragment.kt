@@ -16,6 +16,11 @@ class SettingsFragment : PreferenceFragmentCompat() {
         preferenceManager.sharedPreferencesName = AppSettings.PREFS_NAME
         setPreferencesFromResource(R.xml.settings_preferences, rootKey)
 
+        findPreference<Preference>("open_compat_test")?.setOnPreferenceClickListener {
+            startActivity(android.content.Intent(requireContext(),
+                com.example.duallens3dcamera.compat.CompatibilityTestActivity::class.java))
+            true
+        }
         findPreference<Preference>("open_make_3d_video")?.setOnPreferenceClickListener {
             startActivity(android.content.Intent(requireContext(),
                 com.example.duallens3dcamera.video.Make3dVideoActivity::class.java))

@@ -13,7 +13,7 @@
         android:layout_width="0dp"
         android:layout_height="48dp"
         android:orientation="horizontal"
-        android:weightSum="4"
+        android:weightSum="5"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
@@ -52,6 +52,24 @@
             app:backgroundTint="@android:color/black"
             app:cornerRadius="0dp"/>
 
+        <!-- Live preview mode: 2D / 3D side-by-side / ANA (red-cyan anaglyph) -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnPreview3d"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:insetLeft="0dp"
+            android:insetRight="0dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textAllCaps="false"
+            android:text="2D"
+            android:textColor="@android:color/white"
+            app:backgroundTint="@android:color/black"
+            app:cornerRadius="0dp"/>
+
         <!-- Keep id btnFormat for the photo format toggle -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnFormat"
@@ -80,6 +98,20 @@
         app:layout_constraintTop_toBottomOf="@id/topBar"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"/>
+
+    <!-- Live 3D preview frames (side-by-side or anaglyph), shown over the normal preview -->
+    <ImageView
+        android:id="@+id/preview3d"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@android:color/black"
+        android:contentDescription="Live 3D preview"
+        android:scaleType="fitCenter"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="@id/textureView"
+        app:layout_constraintBottom_toBottomOf="@id/textureView"
+        app:layout_constraintStart_toStartOf="@id/textureView"
+        app:layout_constraintEnd_toEndOf="@id/textureView"/>
 
     <!-- 1x/2x zoom toggle (overlayed on preview) -->
     <com.google.android.material.button.MaterialButton

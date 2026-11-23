@@ -43,6 +43,11 @@
         android:title="3D output">
 
         <Preference
+            android:key="open_compat_test"
+            android:title="Compatibility test"
+            android:summary="Check whether this phone supports 3D photos, 3D video and live 3D preview, and share a report." />
+
+        <Preference
             android:key="open_make_3d_video"
             android:title="Make 3D video from a recording"
             android:summary="Align, colour-match and combine a wide + ultrawide recording into one side-by-side 3D video." />

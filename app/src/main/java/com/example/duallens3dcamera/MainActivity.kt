@@ -13,6 +13,7 @@ import android.os.Looper
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -61,6 +62,8 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
     // ---- UI state flags ----
     private var isRecording: Boolean = false
     private var isBusy: Boolean = false
+
+    private var preview3dMode = StereoCameraController.Preview3dMode.OFF
 
     private var previewConfig: StereoCameraController.PreviewConfig? = null
 
@@ -125,6 +128,18 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
             savePrefs()
             updateEisButton()
             applyVideoConfigToController()
+        }
+
+        binding.btnPreview3d.setOnClickListener {
+            if (isRecording || isBusy) return@setOnClickListener
+            preview3dMode = when (preview3dMode) {
+                StereoCameraController.Preview3dMode.OFF -> StereoCameraController.Preview3dMode.SIDE_BY_SIDE
+                StereoCameraController.Preview3dMode.SIDE_BY_SIDE -> StereoCameraController.Preview3dMode.ANAGLYPH
+                StereoCameraController.Preview3dMode.ANAGLYPH -> StereoCameraController.Preview3dMode.OFF
+            }
+            prefs.edit().putString(AppSettings.KEY_PREVIEW_3D_MODE, preview3dMode.name).apply()
+            controller.setPreview3dMode(preview3dMode)
+            updatePreview3dUi()
         }
 
         binding.btnFormat.setOnClickListener {
@@ -416,6 +431,11 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
             enablePhotoSyncToast = AppSettings.getDebugPhotoSyncToastEnabled(this)
         )
         controller.setPhotoSaveIndividualLensImages(saveIndividualLensImages)
+        preview3dMode = try {
+            StereoCameraController.Preview3dMode.valueOf(
+                prefs.getString(AppSettings.KEY_PREVIEW_3D_MODE, null) ?: "OFF")
+        } catch (_: Exception) { StereoCameraController.Preview3dMode.OFF }
+        controller.setPreview3dMode(preview3dMode)
         controller.setStereoOutput(
             correction = AppSettings.getStereoCorrectionEnabled(this),
             crossEyed = AppSettings.getStereoCrossEyed(this),
@@ -437,6 +457,29 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
     private fun updateTopBarUi() {
         updateEisButton()
         updateFormatButton()
+        updatePreview3dUi()
+    }
+
+    private fun updatePreview3dUi() {
+        binding.btnPreview3d.text = when (preview3dMode) {
+            StereoCameraController.Preview3dMode.OFF -> "2D"
+            StereoCameraController.Preview3dMode.SIDE_BY_SIDE -> "3D"
+            StereoCameraController.Preview3dMode.ANAGLYPH -> "ANA"
+        }
+        val show = preview3dMode != StereoCameraController.Preview3dMode.OFF && !isRecording
+        binding.preview3d.visibility = if (show) View.VISIBLE else View.GONE
+        if (!show) binding.preview3d.setImageDrawable(null)
+    }
+
+    override fun onPreview3dFrame(bitmap: android.graphics.Bitmap) = onUi {
+        if (binding.preview3d.visibility == View.VISIBLE) binding.preview3d.setImageBitmap(bitmap)
+    }
+
+    override fun onPreview3dUnavailable() = onUi {
+        preview3dMode = StereoCameraController.Preview3dMode.OFF
+        prefs.edit().putString(AppSettings.KEY_PREVIEW_3D_MODE, preview3dMode.name).apply()
+        updatePreview3dUi()
+        Toast.makeText(this, "Live 3D preview isn't supported on this phone (too many camera streams).", Toast.LENGTH_LONG).show()
     }
 
     private fun currentRequestedRecordSize(): Size = videoResolution
@@ -546,6 +589,7 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
         isBusy = false
         isRecording = true
         updateUi()
+        updatePreview3dUi()
         requestPreviewTransformReapply() // make sure preview still has the right aspect
     }
 
@@ -553,6 +597,7 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
         isBusy = false
         isRecording = false
         updateUi()
+        updatePreview3dUi()
     }
 
     override fun onPhotoCaptureDone() = onUi {

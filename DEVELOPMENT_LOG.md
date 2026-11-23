@@ -12,6 +12,35 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-23 - Live 3D preview and compatibility test
+
+### Live 3D preview
+
+- Top-bar button cycles 2D / 3D (side-by-side, honouring the cross-eyed and swap settings) / ANA
+  (Dubois red-cyan). `LivePreview3d` adds small (~640 wide) YUV readers for both lenses, pairs frames
+  by sensor timestamp (25 ms window), warps the ultrawide with the last photo correction
+  (`StereoSbs.lastAlignment`, scaled to preview size) or a centred default, composes with OpenCV on
+  its own thread and shows bitmaps in an overlay `ImageView`.
+- The small wide reader replaces the TextureView stream so the photo session has 4 outputs, not 5.
+  Still captures that add the preview as an extra target (non-Pixel workaround) now use the
+  session's actual preview surface. If the session is refused, the controller falls back to 2D and
+  the UI says so. Recording keeps the original 3-stream session and shows the normal preview.
+- Composition uses the still JPEG rotation, then rotates by sensorOrientation - jpegRotation to
+  match how the TextureView preview appears.
+
+### Compatibility test
+
+Settings > 3D output > Compatibility test (`CompatibilityTester`): lists listed and hidden camera
+IDs, finds the rear pair with `LensDiscovery`, captures a simultaneous YUV still from both lenses
+(blank check by luma deviation, timestamp gap), records 1.5 s into two surface-input H.264 encoders
+(blank-frame check by bytes per frame) and retries with the main lens on the logical stream, and
+tries the 4-stream live preview setup. Reports YES / YES (with workaround) / NO for photos, video and
+live preview, with a share button for the text report.
+
+### Verification
+
+Builds, unit tests and lint pass. Neither feature has run on a phone yet (no USB connection).
+
 ## 2026-11-23 - Combine recordings into corrected 3D video
 
 ### Change

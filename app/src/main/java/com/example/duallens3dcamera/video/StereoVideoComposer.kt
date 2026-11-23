@@ -13,6 +13,7 @@ import android.net.Uri
 import android.util.Log
 import com.example.duallens3dcamera.util.StereoAlignMath
 import com.example.duallens3dcamera.util.StereoSbs
+import com.example.duallens3dcamera.util.YuvMat
 import org.opencv.calib3d.Calib3d
 import org.opencv.core.Core
 import org.opencv.core.CvType
@@ -418,47 +419,9 @@ class StereoVideoComposer(
             return null
         }
 
-        private fun rotate(m: Mat): Mat {
-            val code = when ((rotation % 360 + 360) % 360) {
-                90 -> Core.ROTATE_90_CLOCKWISE; 180 -> Core.ROTATE_180; 270 -> Core.ROTATE_90_COUNTERCLOCKWISE
-                else -> return m
-            }
-            val out = Mat(); Core.rotate(m, out, code); m.release(); return out
-        }
+        private fun rotate(m: Mat): Mat = YuvMat.rotate(m, rotation)
 
-        private fun imageToBgr(img: Image): Mat {
-            require(img.format == ImageFormat.YUV_420_888) { "Unexpected decoder image format ${img.format}" }
-            val crop = img.cropRect
-            val w = crop.width() and 1.inv(); val h = crop.height() and 1.inv()
-            val out = ByteArray(w * h * 3 / 2)
-            var off = 0
-            for (p in 0 until 3) {
-                val plane = img.planes[p]
-                val buf: ByteBuffer = plane.buffer
-                val rs = plane.rowStride; val ps = plane.pixelStride
-                val sub = if (p == 0) 1 else 2
-                val pw = w / sub; val ph = h / sub
-                val x0 = crop.left / sub; val y0 = crop.top / sub
-                val row = ByteArray(rs)
-                for (r in 0 until ph) {
-                    val start = (y0 + r) * rs
-                    val len = min(rs, buf.limit() - start)
-                    buf.position(start); buf.get(row, 0, len)
-                    if (ps == 1) {
-                        System.arraycopy(row, x0, out, off, pw)
-                    } else {
-                        for (c in 0 until pw) out[off + c] = row[(x0 + c) * ps]
-                    }
-                    off += pw
-                }
-            }
-            val yuv = Mat(h * 3 / 2, w, CvType.CV_8UC1)
-            yuv.put(0, 0, out)
-            val bgr = Mat()
-            Imgproc.cvtColor(yuv, bgr, Imgproc.COLOR_YUV2BGR_I420)
-            yuv.release()
-            return bgr
-        }
+        private fun imageToBgr(img: Image): Mat = YuvMat.toBgr(img)
 
         override fun close() {
             try { codec.stop() } catch (_: Exception) {}
