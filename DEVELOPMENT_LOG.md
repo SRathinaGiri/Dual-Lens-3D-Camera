@@ -12,6 +12,17 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-23 - Release 0.76.0
+
+- Version 0.76.0 (versionCode 9).
+- Release signing added: `app/build.gradle.kts` reads a git-ignored `keystore.properties`; without
+  it release builds stay unsigned. A new 4096-bit RSA release key for this fork was generated
+  outside the repository (certificate `CN=Open3DCamera, O=Open3DCamera`, SHA-256
+  `b9661ab3be3a6512540fd4ed0ff43899d2cb51d1cc11aa248c25b7c1ed07df6d`). Builds signed with it can't
+  update installs signed by the upstream project's key.
+- `:app:assembleRelease :app:testAgentUnitTest :app:lintRelease` pass; `apksigner verify` confirms
+  the v2 signature. README rewritten for the fork's features.
+
 ## 2026-11-23 - Symmetric correction, linear colour, on-device verification
 
 ### Symmetric correction (owner's request: correct both views, not one to the other)

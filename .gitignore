@@ -12,3 +12,8 @@
 # Local captures and downloaded builds
 /3dpics/
 /artifacts/
+
+# Release signing (never commit)
+/keystore.properties
+*.jks
+*.keystore
