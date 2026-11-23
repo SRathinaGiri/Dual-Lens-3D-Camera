@@ -8,3 +8,7 @@
 /captures
 .externalNativeBuild
 .cxx
+
+# Local captures and downloaded builds
+/3dpics/
+/artifacts/
