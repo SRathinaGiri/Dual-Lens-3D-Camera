@@ -47,12 +47,17 @@ def detect_matches(ref, mov, work):
 
 # ------------------------------------------------------------------ model
 # The ultrawide has noticeably different radial distortion from the main lens. We model it with
-# one coefficient k applied to ultrawide coordinates before the similarity transform:
-#     p_corr = c + (p - c) * (1 + k * |p - c|^2 / R^2),  c = image centre, R = half diagonal.
+# OpenCV's k1 term on normalised coordinates n = (p - c) / R  (c = image centre, R = half diagonal):
+#     n_distorted = n_corrected * (1 + k * |n_corrected|^2)
+# so the warp can be done with cv2.initUndistortRectifyMap (same call the Android app uses).
 
 def radial(p, k, c, R):
-    q = p - c
-    return c + q * (1.0 + k * (q[:, 0] ** 2 + q[:, 1] ** 2)[:, None] / R ** 2)
+    """Distorted ultrawide pixels -> corrected pixels (fixed-point inverse of the k1 model)."""
+    nd = (p - c) / R
+    nu = nd.copy()
+    for _ in range(10):
+        nu = nd / (1.0 + k * (nu[:, 0] ** 2 + nu[:, 1] ** 2))[:, None]
+    return c + nu * R
 
 
 def _vertical_fit(pr, pm, use):
@@ -70,47 +75,52 @@ def _vertical_fit(pr, pm, use):
 def fit_alignment(pr, pm, mov_shape, fit_distortion=True):
     """Distortion + similarity mov->ref, refined on vertical error only.
     Returns dict(a, b, ty, k, c, R), inlier mask, vertical residuals, corrected mov points."""
-    h, w = mov_shape[:2]
-    c = np.array([w / 2.0, h / 2.0]); R = float(np.hypot(w, h) / 2)
+    w = mov_shape[1]
     M, inl = cv2.estimateAffinePartial2D(pm, pr, method=cv2.RANSAC,
                                          ransacReprojThreshold=0.03 * w, maxIters=5000, confidence=0.999)
     if M is None:
         raise RuntimeError("could not fit an initial transform")
-    base = inl.ravel().astype(bool)
+    return refine_alignment(pr, pm, inl.ravel().astype(bool), mov_shape, fit_distortion)
+
+
+def refine_alignment(pr, pm, base, mov_shape, fit_distortion=True):
+    """Deterministic part of the fit (mirrored by StereoAlignMath.kt in the Android app)."""
+    h, w = mov_shape[:2]
+    c = np.array([w / 2.0, h / 2.0]); R = float(np.hypot(w, h) / 2)
 
     def score(k):
         pc = radial(pm, k, c, R)
         a, b, ty, use, res = _vertical_fit(pr, pc, base.copy())
         return np.median(np.abs(res[use])), (a, b, ty, use, res, pc)
 
-    ks = [0.0]
+    k = 0.0
     if fit_distortion:
-        grid = np.linspace(-0.12, 0.12, 25)
-        best = min(grid, key=lambda k: score(k)[0])
-        fine = np.linspace(best - 0.01, best + 0.01, 21)
-        ks = [min(fine, key=lambda k: score(k)[0])]
-    k = ks[0]
+        k = best_k(score)
     _, (a, b, ty, use, res, pc) = score(k)
     return dict(a=a, b=b, ty=ty, k=k, c=c, R=R), use, res, pc
 
 
+K_COARSE = [round(-0.15 + 0.0125 * i, 4) for i in range(25)]   # -0.15 .. +0.15
+
+
+def best_k(score):
+    """Coarse grid then a fine step around the best value (same schedule as the Android app)."""
+    best = min(K_COARSE, key=lambda k: score(k)[0])
+    fine = [best + 0.00125 * (i - 10) for i in range(21)]
+    return min(fine, key=lambda k: score(k)[0])
+
+
 def warp_mov(mov, model, tx, out_shape):
-    """Render mov into ref geometry: inverse similarity, then invert the radial model."""
+    """Render mov into ref geometry with one initUndistortRectifyMap + remap.
+    Output pixel = A * (c + R * n_corrected) + t, so the 'new camera matrix' is R*A with offset A*c + t."""
     a, b, ty, k, c, R = (model[n] for n in ("a", "b", "ty", "k", "c", "R"))
     H, W = out_shape[:2]
-    xs, ys = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))
-    det = a * a + b * b
-    X, Y = xs - tx, ys - ty
-    ux = (a * X + b * Y) / det            # inverse of [[a,-b],[b,a]]
-    uy = (-b * X + a * Y) / det
-    # Invert p_corr = c + q*(1 + k r^2/R^2) by fixed-point iteration on q.
-    qx, qy = ux - c[0], uy - c[1]
-    px, py = qx.copy(), qy.copy()
-    for _ in range(6):
-        f = 1.0 + k * (px * px + py * py) / R ** 2
-        px, py = qx / f, qy / f
-    mapx = (px + c[0]).astype(np.float32)
-    mapy = (py + c[1]).astype(np.float32)
+    K = np.float64([[R, 0, c[0]], [0, R, c[1]], [0, 0, 1]])
+    newK = np.float64([[R * a, -R * b, a * c[0] - b * c[1] + tx],
+                       [R * b, R * a, b * c[0] + a * c[1] + ty],
+                       [0, 0, 1]])
+    dist = np.float64([k, 0, 0, 0, 0])
+    mapx, mapy = cv2.initUndistortRectifyMap(K, dist, np.eye(3), newK, (W, H), cv2.CV_32FC1)
     img = cv2.remap(mov, mapx, mapy, interpolation=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
     valid = (mapx >= 1) & (mapx < mov.shape[1] - 2) & (mapy >= 1) & (mapy < mov.shape[0] - 2)
     return img, valid

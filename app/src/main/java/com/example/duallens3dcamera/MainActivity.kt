@@ -416,6 +416,11 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
             enablePhotoSyncToast = AppSettings.getDebugPhotoSyncToastEnabled(this)
         )
         controller.setPhotoSaveIndividualLensImages(saveIndividualLensImages)
+        controller.setStereoOutput(
+            correction = AppSettings.getStereoCorrectionEnabled(this),
+            crossEyed = AppSettings.getStereoCrossEyed(this),
+            swapEyes = AppSettings.getStereoSwapEyes(this)
+        )
         controller.setPrimeUwOnActive(
             AppSettings.getPhotoPrimeUwOnActiveEnabled(this)
         )

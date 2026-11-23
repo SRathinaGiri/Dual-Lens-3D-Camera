@@ -46,6 +46,19 @@ Options:
    area.
 6. **Crop** both views to the largest rectangle the warped ultrawide fully covers.
 
+## Video: `stereo_video.py`
+
+```powershell
+python tools\stereo_fix\stereo_video.py <stem>_wide.mp4 <stem>_ultrawide.mp4 out.mp4 [--cross] [--half] [--swap]
+```
+
+Combines a recording pair into one side-by-side H.264 MP4 (audio copied from the wide clip;
+`ffmpeg` must be on PATH). The correction is measured once per clip from 8 evenly spaced frame
+pairs with their matches pooled, which steadies the result and lowers the vertical error (about
+0.6 px median on a 1080p test clip), then applied to every frame with one precomputed map and
+one colour lookup table per B/G/R channel. `--half` writes half-width SBS (3D TV format).
+The Android app does the same on the phone: Settings > 3D output > Make 3D video from a recording.
+
 ## Notes
 
 - Shoot in **landscape**. On phones with vertically stacked lenses, portrait shots put the

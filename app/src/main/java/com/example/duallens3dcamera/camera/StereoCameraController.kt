@@ -245,6 +245,15 @@ class StereoCameraController(
 
     @Volatile private var saveIndividualLensImages: Boolean = false
 
+    // 3D output for photos (settings)
+    @Volatile private var stereoCorrectionEnabled: Boolean = true
+    @Volatile private var stereoCrossEyed: Boolean = false
+    @Volatile private var stereoSwapEyes: Boolean = false
+    // Device default eye assignment. Verified on Redmi Note 12 Pro 5G (hidden logical camera):
+    // held in upright landscape the main (wide) lens is the LEFT eye. Other devices keep the
+    // original layout (ultrawide left) until verified.
+    @Volatile private var wideIsLeftByDefault: Boolean = false
+
 
     // Ultrawide priming (settings)
     // OFF by default. When enabled, we fire one ultrawide-only discarded capture when the
@@ -376,6 +385,12 @@ class StereoCameraController(
 
     fun setPhotoSaveIndividualLensImages(enabled: Boolean) {
         this.saveIndividualLensImages = enabled
+    }
+
+    fun setStereoOutput(correction: Boolean, crossEyed: Boolean, swapEyes: Boolean) {
+        this.stereoCorrectionEnabled = correction
+        this.stereoCrossEyed = crossEyed
+        this.stereoSwapEyes = swapEyes
     }
 
     fun setPrimeUwOnActive(enabled: Boolean) {
@@ -999,6 +1014,7 @@ class StereoCameraController(
             wide2xPhysicalId = rig.wide2xId
             phoneIsAPixel = rig.phoneIsAPixel
             wideVideoViaLogicalStream = rig.logicalIsHidden
+            wideIsLeftByDefault = rig.logicalIsHidden
             if (wideVideoViaLogicalStream) {
                 Log.i(TAG, "Hidden logical camera $logicalRearId: wide video will use the logical stream")
             }
@@ -1014,6 +1030,7 @@ class StereoCameraController(
             wide2xPhysicalId = null
             phoneIsAPixel = true
             wideVideoViaLogicalStream = false
+            wideIsLeftByDefault = false
             displayRotation = Surface.ROTATION_0
         }
 
@@ -1840,7 +1857,20 @@ class StereoCameraController(
                 sbsExecutor.execute {
                     try {
                         val zoom2xForThisSbs = zoom2xAtCapture
-                        val sbsBytes = StereoSbs.alignAndCreateSbsJpegBytes(
+                        // 3D-corrected output (1x only); falls back to the original alignment.
+                        val corrected = if (stereoCorrectionEnabled && !zoom2xForThisSbs) {
+                            StereoSbs.correctAndCreateSbsJpegBytes(
+                                wide = wideFrame,
+                                ultra = ultraFrame,
+                                wideIsLeft = wideIsLeftByDefault != stereoSwapEyes,
+                                crossEyed = stereoCrossEyed,
+                                expectedScale = 1.0 / ultra3aFraction
+                            )
+                        } else null
+                        if (stereoCorrectionEnabled && !zoom2xForThisSbs && corrected == null) {
+                            Log.w(TAG, "3D correction failed; using original SBS alignment")
+                        }
+                        val sbsBytes = corrected ?: StereoSbs.alignAndCreateSbsJpegBytes(
                             wideRight = wideFrame,
                             ultraLeft = ultraFrame,
                             zoom2xEnabled = zoom2xForThisSbs,

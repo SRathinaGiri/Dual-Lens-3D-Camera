@@ -12,6 +12,67 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-23 - Combine recordings into corrected 3D video
+
+### Change
+
+- `tools/stereo_fix/stereo_video.py`: per-clip correction measured from 8 sampled frame pairs
+  (pooled SIFT matches, same refinement as photos), one undistort/warp map, one B/G/R colour LUT,
+  crop, L|R or R|L layout, optional half-width SBS, audio copied from the wide clip. On the 1080p
+  Redmi test clip: 1918 inliers, median vertical error 0.6 px, 3840x1080 output in 20 s on the PC.
+- App: Settings > 3D output > "Make 3D video from a recording" opens `Make3dVideoActivity`, which
+  lists the app's `*_wide.mp4` / `*_ultrawide.mp4` pairs from MediaStore and runs
+  `StereoVideoComposer`: MediaCodec decode of both clips (YUV_420_888 to BGR), analysis pass,
+  render pass with OpenCV remap + LUT, H.264 encode via `getInputImage` (stride-aware I420 copy),
+  MediaMuxer with audio passthrough. Output goes to `Pictures/StereoCapture/3d/<stem>_3d*.mp4`.
+  Falls back to half-width SBS if the encoder cannot take the full width; sizes are multiples of 16.
+- Per-frame colour uses B/G/R LUTs instead of Lab to avoid two colour-space conversions per frame.
+
+### Not possible
+
+- Focus / depth-of-field mismatch: the ultrawide keeps the background sharp while the main lens
+  blurs it; detail the lens did not record cannot be restored.
+
+### Verification
+
+PC tool verified on a real clip (frame inspection, stream check). App code builds, unit tests and
+lint pass; not yet run on the phone (no USB available). Live preview still shows one lens.
+
+## 2026-11-23 - In-app 3D correction for photos
+
+### Change
+
+- `tools/stereo_fix` (Python/OpenCV) is the reference: SIFT matches, RANSAC similarity, then
+  scale/rotation/vertical offset refined on vertical error only (IRLS) so horizontal parallax is
+  kept, one ultrawide radial term (OpenCV k1 on coordinates normalised by the half diagonal,
+  coarse/fine grid search), stereo window at the 98th parallax percentile, Lab histogram colour
+  match, crop to the largest fully valid rectangle.
+- `util/StereoAlignMath.kt` ports the deterministic numerics. `StereoAlignMathTest` checks it
+  against a fixture exported from Python (`tools/stereo_fix/export_fixture.py`) on a real Redmi
+  pair: k, a, b, ty, inlier count and window shift match exactly; the colour LUT matches within one
+  level (numpy's pairwise `sum` vs sequential `cumsum` rounding at the last bin).
+- `StereoSbs.correctAndCreateSbsJpegBytes` does the OpenCV part on device (SIFT + FLANN, single
+  `initUndistortRectifyMap` + `remap`, `Core.LUT` per Lab channel). It returns null on any failure
+  or implausible fit and the controller falls back to the original ORB alignment. 2x mode keeps the
+  original path.
+- New photo settings: 3D correction (default on), cross-eyed layout (R|L), swap left/right.
+- Eye order: on the Redmi (hidden logical camera) the main lens is the left eye, measured from
+  parallax on objects at known depths in an upright landscape shot. Other devices keep the original
+  ultrawide-left layout until verified.
+
+### Rejected
+
+- Plain similarity fitted on all coordinates (the original app method): its horizontal term absorbs
+  scene parallax and its vertical fit is pulled by distortion.
+- A "lower part of the frame is nearer" heuristic for eye order: wrong on the first real test scene.
+- A distortion model in the opposite direction (corrected = distorted * (1 + k r^2)): needs a
+  custom inverse map; the OpenCV k1 form lets the app warp with one built-in call.
+
+### Verification
+
+`:app:assembleAgent :app:testAgentUnitTest :app:lintAgent` pass. On-device run pending (phone
+disconnected).
+
 ## 2026-11-23 - Hidden logical rear camera on Redmi Note 12 Pro 5G
 
 ### Finding

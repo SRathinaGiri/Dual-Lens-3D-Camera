@@ -53,6 +53,11 @@ object AppSettings {
     // Note: Applies in JPG mode only (RAW mode always provides two dng files and not sbs)
     const val KEY_PHOTO_SAVE_INDIVIDUAL_IMAGES = "photo_save_individual_images"
 
+    // 3D output (photos)
+    const val KEY_STEREO_CORRECTION = "stereo_correction"     // align + colour match + window
+    const val KEY_STEREO_CROSS_EYED = "stereo_cross_eyed"     // SBS as R|L instead of L|R
+    const val KEY_STEREO_SWAP_EYES = "stereo_swap_eyes"       // flip the default eye assignment
+
     // Debugging (Advanced)
     const val KEY_DEBUG_VIDEO_LOG_ENABLED = "debug_video_log_enabled"
     const val KEY_DEBUG_VIDEO_LOG_FRAMES_ONLY = "debug_video_log_frames_only"
@@ -168,6 +173,15 @@ object AppSettings {
 
     fun getPhotoSaveIndividualImages(context: Context): Boolean =
         prefs(context).getBoolean(KEY_PHOTO_SAVE_INDIVIDUAL_IMAGES, false)
+
+    fun getStereoCorrectionEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_STEREO_CORRECTION, true)
+
+    fun getStereoCrossEyed(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_STEREO_CROSS_EYED, false)
+
+    fun getStereoSwapEyes(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_STEREO_SWAP_EYES, false)
 
     fun getPhotoPrimeUwOnActiveEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_PHOTO_PRIME_UW_ON_ACTIVE, false)
@@ -429,6 +443,15 @@ object AppSettings {
         // default: in JPG mode, output only SBS, no individual images
         if (!sp.contains(KEY_PHOTO_SAVE_INDIVIDUAL_IMAGES)) {
             editor.putBoolean(KEY_PHOTO_SAVE_INDIVIDUAL_IMAGES, false); changed = true
+        }
+        if (!sp.contains(KEY_STEREO_CORRECTION)) {
+            editor.putBoolean(KEY_STEREO_CORRECTION, true); changed = true
+        }
+        if (!sp.contains(KEY_STEREO_CROSS_EYED)) {
+            editor.putBoolean(KEY_STEREO_CROSS_EYED, false); changed = true
+        }
+        if (!sp.contains(KEY_STEREO_SWAP_EYES)) {
+            editor.putBoolean(KEY_STEREO_SWAP_EYES, false); changed = true
         }
 
         // default: ultrawide priming is OFF
