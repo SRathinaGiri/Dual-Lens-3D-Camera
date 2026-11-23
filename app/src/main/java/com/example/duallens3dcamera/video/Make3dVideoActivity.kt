@@ -140,7 +140,7 @@ class Make3dVideoActivity : AppCompatActivity() {
             val message = try {
                 out = MediaStoreUtils.createPending3dVideo(app, name, p.takenMs)
                 val r = StereoVideoComposer(
-                    app, p.wide, p.ultra, out, wideLeft, crossEyed, half,
+                    app, p.wide, p.ultra, out, wideLeft, crossEyed, half, AppSettings.getStereoColourAverage(app),
                     onProgress = { stage, f ->
                         main.post { status.text = "$stage...  ${(f * 100).toInt()}%"; bar.progress = (f * 1000).toInt() }
                     },

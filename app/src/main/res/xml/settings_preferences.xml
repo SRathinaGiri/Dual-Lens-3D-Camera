@@ -59,6 +59,12 @@
             android:defaultValue="true" />
 
         <androidx.preference.SwitchPreferenceCompat
+            android:key="stereo_colour_average"
+            android:title="Average colour of both lenses"
+            android:summary="Both lenses meet at their average colour and brightness. Off = the ultrawide copies the main lens (usually brighter)."
+            android:defaultValue="true" />
+
+        <androidx.preference.SwitchPreferenceCompat
             android:key="stereo_cross_eyed"
             android:title="Cross-eyed layout"
             android:summary="Save the side-by-side image as right|left for cross-eyed viewing. Off = left|right (parallel / VR)."

@@ -45,6 +45,32 @@ class StereoAlignMathTest {
     }
 
     @Test
+    fun symmetricPlanMatchesPython() {
+        val fit = StereoAlignMath.refine(
+            v("ref_x"), v("ref_y"), v("mov_x"), v("mov_y"),
+            BooleanArray(v("base_inliers").size) { v("base_inliers")[it] > 0.5 },
+            s("mov_w").toInt(), s("mov_h").toInt(), fitDistortion = true
+        )
+        val plan = StereoAlignMath.symmetricPlan(fit.model, s("expected.tx_wide_left_98"),
+            s("sym.wide_w").toInt(), s("sym.wide_h").toInt())
+        assertEquals(s("sym.size").toInt(), plan.width)
+        assertEquals(v("sym.size")[1].toInt(), plan.height)
+        val hw = v("sym.hw"); val nk = v("sym.newk")
+        for (i in 0 until 6) assertEquals("hw[$i]", hw[i], plan.wideAffine[i], 1e-3)
+        for (i in 0 until 9) assertEquals("newK[$i]", nk[i], plan.ultraNewK[i], 1e-2)
+    }
+
+    @Test
+    fun averageTargetLutsMatchNumpy() {
+        val (a, b) = StereoAlignMath.averageTargetLuts(v("hist.src"), v("hist.ref"))
+        val ea = v("hist.avg_a"); val eb = v("hist.avg_b")
+        for (i in 0 until 256) {
+            assertTrue("a[$i]", kotlin.math.abs(a[i] - ea[i].toInt()) <= 1)
+            assertTrue("b[$i]", kotlin.math.abs(b[i] - eb[i].toInt()) <= 1)
+        }
+    }
+
+    @Test
     fun histogramLutMatchesNumpy() {
         val lut = StereoAlignMath.histogramMatchLut(v("hist.src"), v("hist.ref"))
         val expected = v("hist.lut").map { it.toInt() }

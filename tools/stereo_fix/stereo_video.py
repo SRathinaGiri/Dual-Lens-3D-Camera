@@ -52,30 +52,32 @@ def analyse(wide_path, ultra_path, samples, swap, window):
     wide_left = not swap
     tx = float(np.percentile(d, window if wide_left else 100 - window))
 
-    # Maps, valid area and colour LUTs from the sampled frames.
-    h, w = pairs[0][0].shape[:2]
+    # Symmetric plan: both views move half way (see stereo_fix.symmetric_plan).
     a, b, ty, k, c, R = (model[x] for x in ("a", "b", "ty", "k", "c", "R"))
+    Hw, newK, (Wc, Hc) = sf.symmetric_plan(model, tx, pairs[0][0].shape)
     K = np.float64([[R, 0, c[0]], [0, R, c[1]], [0, 0, 1]])
-    newK = np.float64([[R * a, -R * b, a * c[0] - b * c[1] + tx], [R * b, R * a, b * c[0] + a * c[1] + ty], [0, 0, 1]])
-    map1, map2 = cv2.initUndistortRectifyMap(K, np.float64([k, 0, 0, 0, 0]), np.eye(3), newK, (w, h), cv2.CV_16SC2)
-    valid = cv2.remap(np.full(ushape[:2], 255, np.uint8), map1, map2, cv2.INTER_NEAREST)
-    valid = cv2.erode(valid, np.ones((5, 5), np.uint8)) == 255
+    map1, map2 = cv2.initUndistortRectifyMap(K, np.float64([k, 0, 0, 0, 0]), np.eye(3), newK, (Wc, Hc), cv2.CV_16SC2)
+    v_u = cv2.remap(np.full(ushape[:2], 255, np.uint8), map1, map2, cv2.INTER_NEAREST)
+    v_w = cv2.warpAffine(np.full(pairs[0][0].shape[:2], 255, np.uint8), Hw, (Wc, Hc), flags=cv2.INTER_NEAREST)
+    valid = cv2.erode(((v_u == 255) & (v_w == 255)).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     x0, y0, x1, y1 = sf.largest_valid_rect(valid.astype(np.uint8))
-    hs = np.zeros((3, 256)); hr = np.zeros((3, 256))
+    # Colour: both clips mapped to the average of their histograms (per B, G, R channel).
+    hw = np.zeros((3, 256)); hu = np.zeros((3, 256))
     for wf, uf in pairs:
-        warped = cv2.remap(uf, map1, map2, cv2.INTER_LINEAR)
+        ww = cv2.warpAffine(wf, Hw, (Wc, Hc), flags=cv2.INTER_LINEAR)
+        uu = cv2.remap(uf, map1, map2, cv2.INTER_LINEAR)
         for ch in range(3):
-            hs[ch] += np.bincount(warped[..., ch][valid], minlength=256)
-            hr[ch] += np.bincount(wf[..., ch][valid], minlength=256)
-    luts = []
+            hw[ch] += np.bincount(ww[..., ch][valid], minlength=256)
+            hu[ch] += np.bincount(uu[..., ch][valid], minlength=256)
+    luts_w, luts_u = [], []
     for ch in range(3):
-        s_cdf = np.cumsum(hs[ch]) / hs[ch].sum(); r_cdf = np.cumsum(hr[ch]) / hr[ch].sum()
-        luts.append(np.interp(s_cdf, r_cdf, np.arange(256)).clip(0, 255).astype(np.uint8))
+        lw_, lu_ = sf.average_luts(hw[ch], hu[ch])
+        luts_w.append(lw_); luts_u.append(lu_)
     info = dict(frames_used=len(pairs), matches=int(len(pr)), inliers=int(use.sum()),
                 scale=float(np.hypot(a, b)), rotation_deg=float(np.degrees(np.arctan2(b, a))), ty=float(ty),
                 k=float(k), tx=tx, vertical_error_median=float(np.median(np.abs(vres[use]))),
-                crop=(x0, y0, x1, y1), wide_left=wide_left)
-    return map1, map2, (x0, y0, x1, y1), np.stack(luts), info
+                canvas=(Wc, Hc), crop=(x0, y0, x1, y1), wide_left=wide_left)
+    return Hw, (Wc, Hc), map1, map2, (x0, y0, x1, y1), np.stack(luts_w), np.stack(luts_u), info
 
 
 def main():
@@ -89,7 +91,8 @@ def main():
     ap.add_argument("--crf", type=int, default=18)
     args = ap.parse_args()
 
-    map1, map2, (x0, y0, x1, y1), luts, info = analyse(args.wide, args.ultra, args.samples, args.swap, args.window)
+    Hw, canvas, map1, map2, (x0, y0, x1, y1), luts_w, luts_u, info = analyse(
+        args.wide, args.ultra, args.samples, args.swap, args.window)
     print("alignment:", info)
     cw, cu = cv2.VideoCapture(args.wide), cv2.VideoCapture(args.ultra)
     fps = cw.get(cv2.CAP_PROP_FPS) or 30.0
@@ -107,9 +110,11 @@ def main():
         if not (okw and oku):
             break
         warped = cv2.remap(uf, map1, map2, cv2.INTER_CUBIC)
+        wide_w = cv2.warpAffine(wf, Hw, canvas, flags=cv2.INTER_AREA)
         for ch in range(3):
-            warped[..., ch] = luts[ch][warped[..., ch]]
-        wc = wf[y0:y0 + eh, x0:x0 + ew]; uc = warped[y0:y0 + eh, x0:x0 + ew]
+            warped[..., ch] = luts_u[ch][warped[..., ch]]
+            wide_w[..., ch] = luts_w[ch][wide_w[..., ch]]
+        wc = wide_w[y0:y0 + eh, x0:x0 + ew]; uc = warped[y0:y0 + eh, x0:x0 + ew]
         left, right = (wc, uc) if info["wide_left"] else (uc, wc)
         a_, b_ = (right, left) if args.cross else (left, right)
         sbs = np.hstack([a_, b_])

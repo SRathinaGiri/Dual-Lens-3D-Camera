@@ -49,6 +49,8 @@ class StereoVideoComposer(
     private val crossEyed: Boolean,
     /** Force half-width SBS (3D TV style). Also used automatically if full width can't be encoded. */
     private val halfWidth: Boolean,
+    /** true: both clips meet at their average colour; false: ultrawide matched to the main lens. */
+    private val colourAverage: Boolean,
     private val onProgress: (stage: String, fraction: Float) -> Unit,
     private val isCancelled: () -> Boolean
 ) {
@@ -66,7 +68,8 @@ class StereoVideoComposer(
     }
 
     private class Plan(
-        val map1: Mat, val map2: Mat, val crop: Rect, val lut: Mat, val fit: StereoAlignMath.Fit
+        val map1: Mat, val map2: Mat, val wideAffine: Mat, val canvas: Size, val crop: Rect,
+        val lutUltra: Mat, val lutWide: Mat, val fit: StereoAlignMath.Fit
     )
 
     fun run(): Result {
@@ -77,7 +80,8 @@ class StereoVideoComposer(
         try {
             return render(plan, total, t0)
         } finally {
-            plan.map1.release(); plan.map2.release(); plan.lut.release()
+            plan.map1.release(); plan.map2.release(); plan.wideAffine.release()
+            plan.lutUltra.release(); plan.lutWide.release()
         }
     }
 
@@ -139,50 +143,65 @@ class StereoVideoComposer(
             val d = StereoAlignMath.horizontalOffsets(rx.toDoubleArray(), fit.corrX, fit.corrY, md.a, md.b)
             val tx = StereoAlignMath.windowShift(d.filterIndexed { i, _ -> fit.inliers[i] }.toDoubleArray(), wideIsLeft)
 
+            // Symmetric: both views take half the scale, angle and shift (StereoAlignMath.symmetricPlan).
+            val sp = StereoAlignMath.symmetricPlan(md, tx, wW, wH)
+            val canvas = Size(sp.width.toDouble(), sp.height.toDouble())
             val r = md.r
             val camK = Mat(3, 3, CvType.CV_64F).apply { put(0, 0, r, 0.0, md.cx, 0.0, r, md.cy, 0.0, 0.0, 1.0) }
-            val newK = Mat(3, 3, CvType.CV_64F).apply {
-                put(0, 0, r * md.a, -r * md.b, md.a * md.cx - md.b * md.cy + tx,
-                    r * md.b, r * md.a, md.b * md.cx + md.a * md.cy + md.ty, 0.0, 0.0, 1.0)
-            }
+            val newK = Mat(3, 3, CvType.CV_64F).apply { put(0, 0, *sp.ultraNewK) }
             val dist = Mat(1, 5, CvType.CV_64F).apply { put(0, 0, md.k, 0.0, 0.0, 0.0, 0.0) }
             val eye = Mat.eye(3, 3, CvType.CV_64F)
             val map1 = Mat(); val map2 = Mat()
-            Calib3d.initUndistortRectifyMap(camK, dist, eye, newK, Size(wW.toDouble(), wH.toDouble()), CvType.CV_16SC2, map1, map2)
+            Calib3d.initUndistortRectifyMap(camK, dist, eye, newK, canvas, CvType.CV_16SC2, map1, map2)
             camK.release(); newK.release(); dist.release(); eye.release()
+            val wideAffine = Mat(2, 3, CvType.CV_64F).apply { put(0, 0, *sp.wideAffine) }
 
             val ones = Mat(uH, uW, CvType.CV_8UC1, Scalar(255.0))
             val valid = Mat()
             Imgproc.remap(ones, valid, map1, map2, Imgproc.INTER_NEAREST, Core.BORDER_CONSTANT, Scalar(0.0))
             ones.release()
+            val onesW = Mat(wH, wW, CvType.CV_8UC1, Scalar(255.0))
+            val validW = Mat()
+            Imgproc.warpAffine(onesW, validW, wideAffine, canvas, Imgproc.INTER_NEAREST, Core.BORDER_CONSTANT, Scalar(0.0))
+            Core.bitwise_and(valid, validW, valid)
+            onesW.release(); validW.release()
             val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
             Imgproc.erode(valid, valid, kernel); kernel.release()
-            val crop0 = StereoSbs.validCropRect(valid, wW, wH) ?: error("Shared area too small")
+            val crop0 = StereoSbs.validCropRect(valid, sp.width, sp.height) ?: error("Shared area too small")
             // Encoders want sizes in multiples of 16.
             val crop = Rect(crop0.x, crop0.y, crop0.width / 16 * 16, crop0.height / 16 * 16)
 
-            // One LUT per B, G, R channel from the sampled frames (fast per frame).
-            val sHist = Array(3) { DoubleArray(256) }; val rHist = Array(3) { DoubleArray(256) }
-            val warped = Mat()
+            // One LUT per B, G, R channel for each view, from the sampled frames (fast per frame).
+            val uHist = Array(3) { DoubleArray(256) }; val wHist = Array(3) { DoubleArray(256) }
+            val warped = Mat(); val wideWarped = Mat()
             for (j in wides.indices) {
                 Imgproc.remap(ultras[j], warped, map1, map2, Imgproc.INTER_LINEAR)
-                val sc = ArrayList<Mat>(); val rc = ArrayList<Mat>()
-                Core.split(warped, sc); Core.split(wides[j], rc)
+                Imgproc.warpAffine(wides[j], wideWarped, wideAffine, canvas, Imgproc.INTER_LINEAR)
+                val uc = ArrayList<Mat>(); val wc = ArrayList<Mat>()
+                Core.split(warped, uc); Core.split(wideWarped, wc)
                 for (c in 0 until 3) {
-                    val hs = StereoSbs.histogram(sc[c], valid); val hr = StereoSbs.histogram(rc[c], valid)
-                    for (v in 0 until 256) { sHist[c][v] += hs[v]; rHist[c][v] += hr[v] }
+                    val hu = StereoSbs.histogram(uc[c], valid); val hw = StereoSbs.histogram(wc[c], valid)
+                    for (v in 0 until 256) { uHist[c][v] += hu[v]; wHist[c][v] += hw[v] }
                 }
-                sc.forEach { it.release() }; rc.forEach { it.release() }
+                uc.forEach { it.release() }; wc.forEach { it.release() }
             }
-            warped.release(); valid.release()
-            val luts = Array(3) { StereoAlignMath.histogramMatchLut(sHist[it], rHist[it]) }
-            val lut = Mat(1, 256, CvType.CV_8UC3)
-            lut.put(0, 0, ByteArray(256 * 3) { luts[it % 3][it / 3].toByte() })
+            warped.release(); wideWarped.release(); valid.release()
+            val lutsU: Array<IntArray>; val lutsW: Array<IntArray>
+            if (colourAverage) {
+                val pairs = Array(3) { StereoAlignMath.averageTargetLuts(wHist[it], uHist[it]) }
+                lutsW = Array(3) { pairs[it].first }; lutsU = Array(3) { pairs[it].second }
+            } else {
+                lutsU = Array(3) { StereoAlignMath.matchLinearLut(uHist[it], wHist[it]) }
+                lutsW = Array(3) { IntArray(256) { v -> v } }
+            }
+            fun lutMat(l: Array<IntArray>) = Mat(1, 256, CvType.CV_8UC3).apply {
+                put(0, 0, ByteArray(256 * 3) { l[it % 3][it / 3].toByte() })
+            }
 
             Log.i(TAG, "plan: frames=${wides.size} points=${rx.size} inliers=${fit.inlierCount} " +
                 "scale=${"%.4f".format(md.scale)} rot=${"%.3f".format(md.rotationDeg)} k=${"%.4f".format(md.k)} " +
-                "tx=${"%.1f".format(tx)} crop=$crop")
-            return Plan(map1, map2, crop, lut, fit)
+                "tx=${"%.1f".format(tx)} canvas=${sp.width}x${sp.height} crop=$crop colourAvg=$colourAverage")
+            return Plan(map1, map2, wideAffine, canvas, crop, lutMat(lutsU), lutMat(lutsW), fit)
         } finally {
             wides.forEach { it.release() }; ultras.forEach { it.release() }
         }
@@ -243,7 +262,8 @@ class StereoVideoComposer(
         }
 
         var frames = 0
-        val warped = Mat(); val sbs = Mat(eyeH, eyeW * 2, CvType.CV_8UC3); val small = Mat(); val yuv = Mat()
+        val warped = Mat(); val wideWarped = Mat()
+        val sbs = Mat(eyeH, eyeW * 2, CvType.CV_8UC3); val small = Mat(); val yuv = Mat()
         try {
             FrameDecoder(context, wideUri).use { dw ->
                 FrameDecoder(context, ultraUri).use { du ->
@@ -254,8 +274,10 @@ class StereoVideoComposer(
                         if (u == null) { w.release(); break }
                         val pts = dw.lastPtsUs
                         Imgproc.remap(u, warped, plan.map1, plan.map2, Imgproc.INTER_LINEAR)
-                        Core.LUT(warped, plan.lut, warped)
-                        val wc = w.submat(plan.crop); val uc = warped.submat(plan.crop)
+                        Core.LUT(warped, plan.lutUltra, warped)
+                        Imgproc.warpAffine(w, wideWarped, plan.wideAffine, plan.canvas, Imgproc.INTER_LINEAR)
+                        Core.LUT(wideWarped, plan.lutWide, wideWarped)
+                        val wc = wideWarped.submat(plan.crop); val uc = warped.submat(plan.crop)
                         val left = if (wideIsLeft) wc else uc
                         val right = if (wideIsLeft) uc else wc
                         (if (crossEyed) right else left).copyTo(sbs.submat(0, eyeH, 0, eyeW))
@@ -288,7 +310,7 @@ class StereoVideoComposer(
             onProgress("Adding sound", 0.97f)
             audio?.copyTo(muxer, audioTrack)
         } finally {
-            warped.release(); sbs.release(); small.release(); yuv.release()
+            warped.release(); wideWarped.release(); sbs.release(); small.release(); yuv.release()
             try { encoder.stop() } catch (_: Exception) {}
             encoder.release()
             try { if (muxerStarted) muxer.stop() } catch (e: Exception) { Log.w(TAG, "muxer.stop: ${e.message}") }

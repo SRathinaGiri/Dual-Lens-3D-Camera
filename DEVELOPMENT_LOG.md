@@ -12,6 +12,51 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-23 - Symmetric correction, linear colour, on-device verification
+
+### Symmetric correction (owner's request: correct both views, not one to the other)
+
+The ultrawide->wide similarity s*R(theta) is split: the wide image gets s^-1/2 R(-theta/2), the
+ultrawide s^+1/2 R(+theta/2), and both image centres meet at the canvas centre, so scale, rotation
+and the vertical/horizontal shift are shared. Canvas is the main frame scaled by s^-1/2 (about
+2577x1929 per eye instead of 3264x2448), so the ultrawide is upscaled ~1.23x instead of ~1.52x.
+Ultrawide distortion is still removed entirely from the ultrawide: the main stream comes from the
+camera with high-quality distortion correction, so splitting k would bend its straight lines.
+Implemented in `stereo_fix.symmetric_plan` and `StereoAlignMath.symmetricPlan` (unit-tested against
+Python), used for photos and Make 3D video. On the test pair, final vertical mismatch 2.46 px vs
+2.72 px for the wide-anchored method.
+
+### Colour: linear transfer instead of histogram matching
+
+On-device symmetric photos showed speckle on smooth surfaces in both halves. Measured on a real pair
+(smooth-area high-pass noise): before colour main 1.30 / ultrawide 3.61; histogram matching to the
+average 7.64 / 5.99; linear per-channel mean/contrast transfer (Reinhard, gain clamped 0.5-2) 1.33 /
+3.62 with the same brightness balance. Histogram matching (to the main lens or to the average) was
+the cause of the earlier "grain" as well. All colour paths now use the linear LUTs; the default moves
+both views to the average, the "Average colour of both lenses" setting can be turned off to copy the
+main lens instead.
+
+### Rejected
+
+- A CLAHE-style slope cap on the histogram LUT: measured worse (dark-area noise 4.80 -> 5.48 and a
+  17-level brightness drop); removed.
+
+### On-device results (Redmi, ADB)
+
+- Compatibility test: 3D photos YES (0.00 ms between lenses), 3D video YES with workaround (direct
+  main-lens encoder ~52 bytes/frame, i.e. blank; logical stream ~34.7 kB/frame), live 3D preview YES
+  (18 fps). The blank main-lens video reproduces only when a preview stream on physical 0 runs next to
+  the encoder on physical 0; the test now mirrors the app's 3-stream recording session for that
+  reason, and its photo check waits for in-flight warm-up frames (an earlier version mis-reported a
+  167 ms gap).
+- Photos with the symmetric path: 221-291 inliers, scale 1.51-1.52, 3.4-4.3 s in the background.
+  A shot with fingers ~5 cm from the lenses gave only 25 inliers; weak fits now reuse the last strong
+  (>= 120 inliers) alignment from the session.
+- Make 3D video from the app: 124 frames, 3008x832 cross-eyed with AAC audio in 25 s.
+- Automation notes: the phone locks after 60 s; uiautomator dumps can go stale while the live 3D
+  overlay updates, so stale dumps are now deleted first and taps are guarded by call state, keyguard
+  and foreground activity.
+
 ## 2026-11-23 - Live 3D preview and compatibility test
 
 ### Live 3D preview

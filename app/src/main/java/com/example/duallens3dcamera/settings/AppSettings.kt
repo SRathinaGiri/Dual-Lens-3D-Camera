@@ -58,6 +58,7 @@ object AppSettings {
     const val KEY_STEREO_CROSS_EYED = "stereo_cross_eyed"     // SBS as R|L instead of L|R
     const val KEY_STEREO_SWAP_EYES = "stereo_swap_eyes"       // flip the default eye assignment
     const val KEY_PREVIEW_3D_MODE = "preview_3d_mode"         // StereoCameraController.Preview3dMode name
+    const val KEY_STEREO_COLOUR_AVERAGE = "stereo_colour_average" // true: both lenses meet at the average colour
 
     // Debugging (Advanced)
     const val KEY_DEBUG_VIDEO_LOG_ENABLED = "debug_video_log_enabled"
@@ -183,6 +184,9 @@ object AppSettings {
 
     fun getStereoSwapEyes(context: Context): Boolean =
         prefs(context).getBoolean(KEY_STEREO_SWAP_EYES, false)
+
+    fun getStereoColourAverage(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_STEREO_COLOUR_AVERAGE, true)
 
     fun getPhotoPrimeUwOnActiveEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_PHOTO_PRIME_UW_ON_ACTIVE, false)

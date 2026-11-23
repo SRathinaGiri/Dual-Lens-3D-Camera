@@ -133,6 +133,88 @@ object StereoAlignMath {
     fun windowShift(offsetsInliers: DoubleArray, wideIsLeft: Boolean, windowPct: Double = 98.0): Double =
         if (wideIsLeft) percentile(offsetsInliers, windowPct) else percentile(offsetsInliers, 100.0 - windowPct)
 
+    /**
+     * Split the correction between both views (mirrors stereo_fix.symmetric_plan): the
+     * ultrawide->wide similarity s*R(theta) becomes s^-1/2 R(-theta/2) on the wide image and
+     * s^+1/2 R(+theta/2) on the ultrawide, and both image centres meet at the canvas centre, so
+     * scale, angle and the vertical/horizontal shift are shared equally. Ultrawide distortion stays
+     * on the ultrawide (the camera already outputs a distortion-corrected main image).
+     *
+     * [wideAffine] is a row-major 2x3 for warpAffine of the wide image; [ultraNewK] is a row-major
+     * 3x3 "new camera matrix" for initUndistortRectifyMap of the ultrawide (camera matrix
+     * [[r,0,cx],[0,r,cy],[0,0,1]], distortion [k,0,0,0,0]).
+     */
+    class SymmetricPlan(val wideAffine: DoubleArray, val ultraNewK: DoubleArray, val width: Int, val height: Int)
+
+    fun symmetricPlan(m: Model, tx: Double, wideW: Int, wideH: Int): SymmetricPlan {
+        val s = hypot(m.a, m.b)
+        val th = kotlin.math.atan2(m.b, m.a)
+        val h = 1.0 / kotlin.math.sqrt(s)
+        val ca = kotlin.math.cos(-th / 2); val sa = kotlin.math.sin(-th / 2)
+        val lw = doubleArrayOf(h * ca, -h * sa, h * sa, h * ca)                // 2x2 row-major
+        val am = doubleArrayOf(m.a, -m.b, m.b, m.a)
+        val lu = doubleArrayOf(
+            lw[0] * am[0] + lw[1] * am[2], lw[0] * am[1] + lw[1] * am[3],
+            lw[2] * am[0] + lw[3] * am[2], lw[2] * am[1] + lw[3] * am[3]
+        )
+        fun mul(l: DoubleArray, x: Double, y: Double) = doubleArrayOf(l[0] * x + l[1] * y, l[2] * x + l[3] * y)
+        // Python: int(round(W * h)) & ~1 (round half to even).
+        val wc = Math.rint(wideW * h).toInt() and 1.inv()
+        val hc = Math.rint(wideH * h).toInt() and 1.inv()
+        val cw = mul(lw, wideW / 2.0, wideH / 2.0)
+        val acx = am[0] * m.cx + am[1] * m.cy + tx
+        val acy = am[2] * m.cx + am[3] * m.cy + m.ty
+        val cu = mul(lw, acx, acy)
+        val ox = wc / 2.0 - (cw[0] + cu[0]) / 2.0
+        val oy = hc / 2.0 - (cw[1] + cu[1]) / 2.0
+        val lwt = mul(lw, tx, m.ty)
+        val luc = mul(lu, m.cx, m.cy)
+        val offX = luc[0] + lwt[0] + ox
+        val offY = luc[1] + lwt[1] + oy
+        val r = m.r
+        return SymmetricPlan(
+            wideAffine = doubleArrayOf(lw[0], lw[1], ox, lw[2], lw[3], oy),
+            ultraNewK = doubleArrayOf(r * lu[0], r * lu[1], offX, r * lu[2], r * lu[3], offY, 0.0, 0.0, 1.0),
+            width = wc, height = hc
+        )
+    }
+
+    /** Mean and standard deviation of the values described by a 256-bin histogram. */
+    fun histStats(h: DoubleArray): Pair<Double, Double> {
+        val n = h.sum()
+        if (n <= 0) return 128.0 to 1.0
+        var s = 0.0; var sq = 0.0
+        for (v in 0 until 256) { s += v * h[v]; sq += v.toDouble() * v * h[v] }
+        val mean = s / n
+        return mean to kotlin.math.sqrt((sq / n - mean * mean).coerceAtLeast(0.0))
+    }
+
+    /**
+     * Straight-line tone mapping (Reinhard colour transfer for one channel): v -> (v - m0) * g + m1,
+     * gain g = s1 / s0 clamped to [0.5, 2]. Being linear, it can't posterise smooth areas or pick out
+     * noise the way histogram matching does. Mirrors stereo_fix.linear_lut.
+     */
+    fun linearLut(m0: Double, s0: Double, m1: Double, s1: Double): IntArray {
+        val g = (if (s0 > 1e-6) s1 / s0 else 1.0).coerceIn(0.5, 2.0)
+        return IntArray(256) { v -> floor((v - m0) * g + m1 + 0.5).toInt().coerceIn(0, 255) }
+    }
+
+    /** Linear LUT taking the [src] channel to the [ref] channel's mean and contrast. */
+    fun matchLinearLut(src: DoubleArray, ref: DoubleArray): IntArray {
+        val (ms, ss) = histStats(src); val (mr, sr) = histStats(ref)
+        return linearLut(ms, ss, mr, sr)
+    }
+
+    /**
+     * Linear LUTs taking both channels to their average mean and contrast (mirrors
+     * stereo_fix.histogram_target_luts): each view moves half way, neither is the reference.
+     */
+    fun averageTargetLuts(histA: DoubleArray, histB: DoubleArray): Pair<IntArray, IntArray> {
+        val (ma, sa) = histStats(histA); val (mb, sb) = histStats(histB)
+        val mt = (ma + mb) / 2; val st = (sa + sb) / 2
+        return linearLut(ma, sa, mt, st) to linearLut(mb, sb, mt, st)
+    }
+
     /** numpy.percentile (linear interpolation). */
     fun percentile(values: DoubleArray, p: Double): Double {
         require(values.isNotEmpty())

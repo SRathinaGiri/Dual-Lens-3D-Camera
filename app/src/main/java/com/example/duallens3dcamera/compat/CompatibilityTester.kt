@@ -165,16 +165,21 @@ class CompatibilityTester(private val context: Context, private val log: (String
                 OutputConfiguration(ur.surface).apply { setPhysicalCameraId(rig.ultraId) }
             )) ?: run { log("  ✗ The phone refused a session with both lenses."); return Support.NO }
             try {
-                // Let exposure settle with a short preview, then take one still.
-                val prev = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(wr.surface) }
+                // Let exposure settle with a short preview of both lenses, wait for in-flight frames
+                // to land, then take one still that targets both.
+                val prev = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                    addTarget(wr.surface); addTarget(ur.surface)
+                }
                 session.setRepeatingRequest(prev.build(), null, handler)
                 Thread.sleep(800)
                 session.stopRepeating()
-                Thread.sleep(100)
+                session.abortCaptures()
+                Thread.sleep(400)
                 val still = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(wr.surface); addTarget(ur.surface)
                 }
-                armed.set(true)
+                handler.post { armed.set(true) }  // after any already-queued listener calls
+                Thread.sleep(50)
                 session.capture(still.build(), null, handler)
                 if (!latch.await(4, TimeUnit.SECONDS) || stats[0] == null || stats[1] == null) {
                     log("  ✗ Only ${listOfNotNull(stats[0], stats[1]).size} of 2 lens images arrived.")
@@ -198,14 +203,19 @@ class CompatibilityTester(private val context: Context, private val log: (String
                           ultraChars: CameraCharacteristics, wideViaLogical: Boolean): Support {
         val size = commonPrivateSize(wideChars, ultraChars) ?: run { log("  ✗ No common video size."); return Support.NO }
         val encW = Encoder(size); val encU = Encoder(size)
+        // Same layout as the app's recording session: a preview stream from the main lens plus
+        // one encoder per lens. (Without the preview, some phones pass here but fail in the app.)
+        val previewTex = SurfaceTexture(false).apply { setDefaultBufferSize(640, 480) }
+        val previewSurface = Surface(previewTex)
         try {
             val session = configure(camera, listOf(
+                OutputConfiguration(previewSurface).apply { setPhysicalCameraId(rig.wide1xId) },
                 OutputConfiguration(encW.surface).apply { if (!wideViaLogical) setPhysicalCameraId(rig.wide1xId) },
                 OutputConfiguration(encU.surface).apply { setPhysicalCameraId(rig.ultraId) }
             )) ?: run { log("  ✗ The phone refused a video session with both lenses."); return Support.NO }
             try {
                 val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                    addTarget(encW.surface); addTarget(encU.surface)
+                    addTarget(previewSurface); addTarget(encW.surface); addTarget(encU.surface)
                 }
                 session.setRepeatingRequest(req.build(), null, handler)
                 Thread.sleep(1500)
@@ -216,6 +226,7 @@ class CompatibilityTester(private val context: Context, private val log: (String
             }
         } finally {
             encW.finish(); encU.finish()
+            previewSurface.release(); previewTex.release()
         }
         val wAvg = encW.avgBytes(); val uAvg = encU.avgBytes()
         log("  ${size.width}x${size.height}: main ${encW.frames} frames (~${wAvg} bytes/frame), ultrawide ${encU.frames} frames (~${uAvg} bytes/frame)")

@@ -137,6 +137,85 @@ def horizontal_offsets(pr, pm, a, b):
 
 
 # ------------------------------------------------------------------ colour
+def symmetric_plan(model, tx, wide_shape):
+    """Split the correction between both views instead of fitting the ultrawide to the wide.
+
+    The ultrawide->wide similarity M = [s*R(theta) | t] (t includes the stereo window) becomes
+      wide  -> canvas:  Hw = s^-1/2 R(-theta/2) p + o
+      ultra -> canvas:  Hu = s^+1/2 R(+theta/2) u + (Lw t + o)      (so Hu = Hw o M: still aligned)
+    i.e. the bigger-scale view is shrunk and the smaller one enlarged by the same factor, each turns
+    half the angle, and o centres the midpoint of the two image centres so the vertical and
+    horizontal shifts are shared equally. Ultrawide distortion stays fully on the ultrawide (the
+    main image is already distortion-corrected by the camera, so it is the straight reference).
+
+    Returns (Hw 2x3, newK 3x3 for initUndistortRectifyMap of the ultrawide, (Wc, Hc)).
+    Mirrors StereoAlignMath.symmetricPlan in the Android app.
+    """
+    a, b, ty, c, R = model["a"], model["b"], model["ty"], model["c"], model["R"]
+    s = float(np.hypot(a, b)); th = float(np.arctan2(b, a))
+    h = s ** -0.5
+    Lw = h * np.float64([[np.cos(-th / 2), -np.sin(-th / 2)], [np.sin(-th / 2), np.cos(-th / 2)]])
+    A = np.float64([[a, -b], [b, a]])
+    Lu = Lw @ A
+    t = np.float64([tx, ty])
+    H, W = wide_shape[:2]
+    Wc, Hc = int(round(W * h)) & ~1, int(round(H * h)) & ~1
+    cw = Lw @ np.float64([W / 2.0, H / 2.0])
+    cu = Lw @ (A @ np.float64(c) + t)
+    o = np.float64([Wc / 2.0, Hc / 2.0]) - (cw + cu) / 2.0
+    Hw = np.hstack([Lw, o[:, None]])
+    off_u = Lu @ np.float64(c) + Lw @ t + o
+    newK = np.float64([[R * Lu[0, 0], R * Lu[0, 1], off_u[0]],
+                       [R * Lu[1, 0], R * Lu[1, 1], off_u[1]],
+                       [0, 0, 1]])
+    return Hw, newK, (Wc, Hc)
+
+
+def hist_stats(h):
+    """Mean and standard deviation of the values in a 256-bin histogram."""
+    h = np.asarray(h, np.float64); n = h.sum()
+    if n <= 0:
+        return 128.0, 1.0
+    v = np.arange(256, dtype=np.float64)
+    mean = (v * h).sum() / n
+    return mean, float(np.sqrt(max((v * v * h).sum() / n - mean * mean, 0.0)))
+
+
+def linear_lut(m0, s0, m1, s1):
+    """Straight-line tone mapping v -> (v - m0) * g + m1, g = s1/s0 clamped to [0.5, 2]
+    (Reinhard colour transfer for one channel). Linear, so it can't posterise smooth areas or
+    amplify noise in narrow tone bands like histogram matching. Mirrors StereoAlignMath.linearLut."""
+    g = float(np.clip(s1 / s0 if s0 > 1e-6 else 1.0, 0.5, 2.0))
+    return np.clip(np.floor((np.arange(256) - m0) * g + m1 + 0.5), 0, 255).astype(np.uint8)
+
+
+def average_luts(ha, hb):
+    """Linear LUTs taking both channels to their average mean and contrast (neither is the reference)."""
+    (ma, sa), (mb, sb) = hist_stats(ha), hist_stats(hb)
+    mt, st = (ma + mb) / 2, (sa + sb) / 2
+    return linear_lut(ma, sa, mt, st), linear_lut(mb, sb, mt, st)
+
+
+def histogram_target_luts(img_a, img_b, mask):
+    """Per-Lab-channel linear LUTs that bring both images to their average colour and contrast."""
+    la, lb = cv2.cvtColor(img_a, cv2.COLOR_BGR2LAB), cv2.cvtColor(img_b, cv2.COLOR_BGR2LAB)
+    m = mask.astype(bool)
+    luts_a, luts_b = [], []
+    for ch in range(3):
+        ha = np.bincount(la[..., ch][m], minlength=256)
+        hb = np.bincount(lb[..., ch][m], minlength=256)
+        A, B = average_luts(ha, hb)
+        luts_a.append(A); luts_b.append(B)
+    return la, lb, luts_a, luts_b
+
+
+def apply_lab_luts(lab, luts):
+    out = np.empty_like(lab)
+    for ch in range(3):
+        out[..., ch] = luts[ch][lab[..., ch]]
+    return cv2.cvtColor(out, cv2.COLOR_LAB2BGR)
+
+
 def match_colour(src, ref, mask):
     """Histogram-match src to ref per Lab channel using pixels where mask is set."""
     src_lab = cv2.cvtColor(src, cv2.COLOR_BGR2LAB)
@@ -148,9 +227,8 @@ def match_colour(src, ref, mask):
         r_vals = ref_lab[..., c][m]
         s_hist = np.bincount(s_vals, minlength=256).astype(np.float64)
         r_hist = np.bincount(r_vals, minlength=256).astype(np.float64)
-        s_cdf = np.cumsum(s_hist) / s_hist.sum()
-        r_cdf = np.cumsum(r_hist) / r_hist.sum()
-        lut = np.interp(s_cdf, r_cdf, np.arange(256)).clip(0, 255).astype(np.uint8)
+        (ms, ss), (mr, sr) = hist_stats(s_hist), hist_stats(r_hist)
+        lut = linear_lut(ms, ss, mr, sr)
         out[..., c] = lut[src_lab[..., c]]
     return cv2.cvtColor(out, cv2.COLOR_LAB2BGR)
 
@@ -218,13 +296,29 @@ def process_pair(stem, wide_p, ultra_p, out_dir, args):
     else:
         tx = float(np.percentile(d_in, 100 - args.window))
     parallax = (d_in - tx) if wide_left else (tx - d_in)        # x_L - x_R after alignment
-    warped, valid = warp_mov(ultra, model, tx, wide.shape)
-    valid = cv2.erode(valid.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
-
-    warped = match_colour(warped, wide, valid)
+    if args.anchor == "wide":
+        # Original behaviour: fit the ultrawide to the wide.
+        warped, valid = warp_mov(ultra, model, tx, wide.shape)
+        valid = cv2.erode(valid.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        warped = match_colour(warped, wide, valid)
+        wide_w = wide
+    else:
+        # Symmetric: both views move half way (scale, angle, shift) and meet in colour.
+        Hw, newK, (Wc, Hc) = symmetric_plan(model, tx, wide.shape)
+        wide_w = cv2.warpAffine(wide, Hw, (Wc, Hc), flags=cv2.INTER_AREA if Hw[0, 0] < 1 else cv2.INTER_CUBIC)
+        v_w = cv2.warpAffine(np.full(wide.shape[:2], 255, np.uint8), Hw, (Wc, Hc), flags=cv2.INTER_NEAREST)
+        c, R = model["c"], model["R"]
+        K = np.float64([[R, 0, c[0]], [0, R, c[1]], [0, 0, 1]])
+        mapx, mapy = cv2.initUndistortRectifyMap(K, np.float64([model["k"], 0, 0, 0, 0]), np.eye(3), newK, (Wc, Hc), cv2.CV_32FC1)
+        warped = cv2.remap(ultra, mapx, mapy, interpolation=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+        v_u = (mapx >= 1) & (mapx < ultra.shape[1] - 2) & (mapy >= 1) & (mapy < ultra.shape[0] - 2)
+        valid = cv2.erode(((v_w == 255) & v_u).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        lw, lu, luts_w, luts_u = histogram_target_luts(wide_w, warped, valid)
+        wide_w = apply_lab_luts(lw, luts_w)
+        warped = apply_lab_luts(lu, luts_u)
 
     x0, y0, x1, y1 = largest_valid_rect(valid)
-    wide_c = wide[y0:y1, x0:x1]
+    wide_c = wide_w[y0:y1, x0:x1]
     ultra_c = warped[y0:y1, x0:x1]
     left, right = (wide_c, ultra_c) if wide_left else (ultra_c, wide_c)
 
@@ -253,7 +347,9 @@ def process_pair(stem, wide_p, ultra_p, out_dir, args):
         distortion_k=float(model["k"]), wide_is_left=wide_left,
         parallax_px=dict(p2=float(np.percentile(parallax, 2)), p50=float(np.median(parallax)),
                          p98=float(np.percentile(parallax, 98))),
-        parallax_pct_of_width=float((np.percentile(parallax, 98) - np.percentile(parallax, 2)) / (x1 - x0) * 100),
+        # Parallax is measured in main-image pixels; the symmetric canvas is scaled by s^-1/2.
+        parallax_pct_of_width=float((np.percentile(parallax, 98) - np.percentile(parallax, 2))
+                                    * (1.0 if args.anchor == "wide" else np.hypot(a, b) ** -0.5) / (x1 - x0) * 100),
         crop=[int(x0), int(y0), int(x1), int(y1)], size=[int(x1 - x0), int(y1 - y0)],
     )
     return report
@@ -317,6 +413,9 @@ def main():
     ap.add_argument("output_dir", type=pathlib.Path)
     ap.add_argument("--swap", action="store_true",
                     help="ultrawide is the left eye (default: main/wide is left)")
+    ap.add_argument("--anchor", choices=["both", "wide"], default="both",
+                    help="both: split scale/angle/shift/colour between the views (default); "
+                         "wide: fit the ultrawide to the main image")
     ap.add_argument("--no-distortion", action="store_true",
                     help="skip the radial distortion fit (plain similarity alignment)")
     ap.add_argument("--window", type=float, default=98.0,

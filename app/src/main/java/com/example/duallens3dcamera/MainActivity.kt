@@ -439,7 +439,8 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
         controller.setStereoOutput(
             correction = AppSettings.getStereoCorrectionEnabled(this),
             crossEyed = AppSettings.getStereoCrossEyed(this),
-            swapEyes = AppSettings.getStereoSwapEyes(this)
+            swapEyes = AppSettings.getStereoSwapEyes(this),
+            colourAverage = AppSettings.getStereoColourAverage(this)
         )
         controller.setPrimeUwOnActive(
             AppSettings.getPhotoPrimeUwOnActiveEnabled(this)

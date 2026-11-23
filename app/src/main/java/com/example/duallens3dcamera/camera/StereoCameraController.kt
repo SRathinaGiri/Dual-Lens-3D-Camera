@@ -256,6 +256,7 @@ class StereoCameraController(
     @Volatile private var stereoCorrectionEnabled: Boolean = true
     @Volatile private var stereoCrossEyed: Boolean = false
     @Volatile private var stereoSwapEyes: Boolean = false
+    @Volatile private var stereoColourAverage: Boolean = true
     // Device default eye assignment. Verified on Redmi Note 12 Pro 5G (hidden logical camera):
     // held in upright landscape the main (wide) lens is the LEFT eye. Other devices keep the
     // original layout (ultrawide left) until verified.
@@ -415,10 +416,11 @@ class StereoCameraController(
         live3d = null
     }
 
-    fun setStereoOutput(correction: Boolean, crossEyed: Boolean, swapEyes: Boolean) {
+    fun setStereoOutput(correction: Boolean, crossEyed: Boolean, swapEyes: Boolean, colourAverage: Boolean = true) {
         this.stereoCorrectionEnabled = correction
         this.stereoCrossEyed = crossEyed
         this.stereoSwapEyes = swapEyes
+        this.stereoColourAverage = colourAverage
     }
 
     fun setPrimeUwOnActive(enabled: Boolean) {
@@ -1938,6 +1940,7 @@ class StereoCameraController(
                                 ultra = ultraFrame,
                                 wideIsLeft = wideIsLeftByDefault != stereoSwapEyes,
                                 crossEyed = stereoCrossEyed,
+                                colourAverage = stereoColourAverage,
                                 expectedScale = 1.0 / ultra3aFraction
                             )
                         } else null
