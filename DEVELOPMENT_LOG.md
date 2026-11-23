@@ -12,6 +12,47 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-23 - Unplayable `.pending-` videos: encoder size limit and crash on stop
+
+**Symptom.** Three 30–50 s recordings on the Redmi Note 12 Pro were left as
+`.pending-<expiry>-…_wide/ultrawide.mp4`. They had no `moov` box, so they wouldn't play. A 2 s recording
+made the same evening was fine.
+
+**Cause, from `logcat -b crash` and the ANR log.**
+- The default video size was the largest common 4:3 camera size, 3264×2448. The MediaTek H.264
+  encoder (`c2.mtk.avc.encoder`) declares a maximum of 3840×2176, so 2448 rows is out of range. Two
+  encoders at that size only managed about 3 fps; the codec service grew to about 6 GB of
+  DMA-BUF, and the UI hit an ANR.
+- On stop, `VideoEncoder.stopAndRelease()` waited 5 s for EOS, then released the codec while its
+  drain thread was still inside `dequeueOutputBuffer`. The resulting `IllegalStateException`
+  ("Invalid to call at Released state") was uncaught on the drain thread and killed the process
+  before the muxers stopped and before `IS_PENDING` was cleared.
+
+**Fix.**
+- The drain and feed threads (video and audio) catch everything. If EOS doesn't arrive in 5 s they
+  are told to abandon the rest, and the codec is released only after they have exited. The muxers
+  always reach `stop()`, so the file keeps whatever was recorded.
+- `AppSettings.encoderSupportsStereo(size, fps)` checks the hardware AVC encoder:
+  - the size, padded to the encoder's block alignment, must be supported. Without the padding,
+    1080-row sizes were wrongly rejected.
+  - one stream at twice the frame rate must be covered by a declared performance point.
+- Video sizes and frame rates that fail the check are no longer offered. The default is the
+  largest 4:3 size that records at 30 fps. A saved size the encoder can't take is replaced at
+  launch.
+- On this phone 3264×2448 is dropped, and the default becomes 1440×1088 at 30 fps.
+
+**Verification.**
+- `:app:assembleAgent :app:testAgentUnitTest :app:lintAgent` pass.
+- Agent build on the Redmi: the resolution list tops out at 2560×1920, and a fresh install chooses
+  1440×1088 at 30 fps.
+- A 43 s recording at 2560×1920 / 15 fps produced two finalised MP4s (both EOS reached, no crash)
+  that decode fully with ffmpeg.
+- The picture from the six broken files was recovered off-device by walking the length-prefixed
+  NAL units in `mdat` and borrowing SPS/PPS from a good file. Audio was not recovered.
+
+**Not changed.** `MainActivity.onPause()` still blocks the UI thread on `controller.stop()`. A slow
+stop can still cause an ANR, but the files are now finalised either way.
+
 ## 2026-11-23 - Release 0.76.0
 
 - Version 0.76.0 (versionCode 9).

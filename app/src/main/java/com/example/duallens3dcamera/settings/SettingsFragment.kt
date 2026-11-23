@@ -162,7 +162,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
         resPref.entryValues = sizes.map { AppSettings.sizeToString(it) }.toTypedArray()
         resPref.summaryProvider = ListPreference.SimpleSummaryProvider.getInstance()
 
-        val def = AppSettings.chooseDefaultVideoSize(sizes)
+        val def = AppSettings.chooseDefaultVideoSize(caps, sizes)
         val current = AppSettings.parseSize(sp.getString(AppSettings.KEY_VIDEO_RESOLUTION, null))
             ?.takeIf { s -> sizes.any { it.width == s.width && it.height == s.height } }
             ?: def
