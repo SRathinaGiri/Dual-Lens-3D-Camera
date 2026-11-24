@@ -1,5 +1,15 @@
 # Dual Lens 3D Camera
 
+[![Download APK](https://img.shields.io/badge/Download-APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/SRathinaGiri/Dual-Lens-3D-Camera/releases/latest)
+
+[![Latest release](https://img.shields.io/github/v/release/SRathinaGiri/Dual-Lens-3D-Camera?label=release&color=blue)](https://github.com/SRathinaGiri/Dual-Lens-3D-Camera/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/SRathinaGiri/Dual-Lens-3D-Camera/total?color=brightgreen)](https://github.com/SRathinaGiri/Dual-Lens-3D-Camera/releases)
+[![Android 11+](https://img.shields.io/badge/Android-11%2B%20%28API%2030%29-3DDC84?logo=android&logoColor=white)](#supported-phones)
+[![Kotlin](https://img.shields.io/badge/Kotlin-Camera2-7F52FF?logo=kotlin&logoColor=white)](app/src/main/java/com/example/duallens3dcamera)
+[![OpenCV](https://img.shields.io/badge/OpenCV-4.12-5C3EE8?logo=opencv&logoColor=white)](#3d-correction-photos-and-3d-videos)
+[![Last commit](https://img.shields.io/github/last-commit/SRathinaGiri/Dual-Lens-3D-Camera)](https://github.com/SRathinaGiri/Dual-Lens-3D-Camera/commits/master)
+[![Forked from jcpeterson](https://img.shields.io/badge/fork%20of-jcpeterson%2FDual--Lens--3D--Camera-lightgrey?logo=github)](https://github.com/jcpeterson/Dual-Lens-3D-Camera)
+
 An Android app for taking stereo (3D) photos and videos with a phone's **wide** (main) and
 **ultrawide** rear lenses at the same time.
 
