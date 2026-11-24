@@ -45,7 +45,8 @@ video check while one at 0.994 didn't.
 
 Verified: `:app:assembleAgent :app:testAgentUnitTest :app:lintAgent`. On the Redmi (agent build),
 two photos were corrected at scale 1.546 / 1.534, and a 4 s clip made a 3D video at scale 1.533 with
-525 inliers. No fatal exceptions. Not yet run on the Nothing phone.
+525 inliers. No fatal exceptions. The tester then confirmed that 0.77.1 works on the Nothing Phone
+(4a): 3D photos and Make 3D video both succeed.
 
 ## 2026-11-24 - Release 0.77.0
 
