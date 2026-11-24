@@ -12,6 +12,41 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Release 0.77.1
+
+- Version 0.77.1 (versionCode 12): Nothing Phone (4a) fixes (entry below).
+- `:app:assembleRelease :app:testAgentUnitTest :app:lintRelease` pass; `apksigner` confirms the
+  fork's release certificate (`b9661ab3…6df6d`), so it updates 0.77.0 in place.
+
+## 2026-11-24 - Nothing Phone (4a): cropped ultrawide and still capture failure
+
+A tester's Nothing Phone (4a) (A069, Android 17, Qualcomm) passed every Compatibility test step
+(logical camera 0 = main 4 + ultrawide 2 + tele 3; hidden IDs 2-4), but in the app:
+
+- **Make 3D video** stopped with "Implausible alignment (scale 0.994, rotation 0.03)". A scale of
+  ~1.0 means the phone already crops the ultrawide's physical stream to the main lens's field of
+  view, unlike the Redmi and Pixel (~1.5). The live 3D preview showed the same thing: the ultrawide
+  half was over-zoomed and soft because the preview applied the expected 1/zoom-range scale on top.
+  - Fix: accept scales down to 0.85 in the video plan (was 1.0) and in both photo paths
+    (`StereoSbs.minPlausibleScale`: min(0.75 x expected, 0.85)). Rotation limits are unchanged.
+  - The preview still starts from the expected scale and switches to the measured alignment after
+    the first successful photo.
+- **Photos** failed with `Still capture failed: CaptureFailure@...` (the object, not a reason).
+  The test captures at ~1600 px; the app uses the largest common 4:3 YUV size, which this phone
+  apparently lists but can't deliver for two lenses at once. Not confirmed on the device.
+  - Fix: on `REASON_ERROR` for a YUV still, the controller saves a smaller size limit
+    (`still_max_edge`, at least 20% smaller per step, never under 1600 px), rebuilds the session
+    and asks the user to retake. The log and toast now give the reason and physical lens.
+
+The tester also reported that some photos were saved but the two halves didn't match, and that one
+3D video worked in the morning but a later one didn't. Both fit the same cause: photos fell back to
+the old alignment with the expected 1.67x scale, and a clip measuring just above 1.0 passed the old
+video check while one at 0.994 didn't.
+
+Verified: `:app:assembleAgent :app:testAgentUnitTest :app:lintAgent`. On the Redmi (agent build),
+two photos were corrected at scale 1.546 / 1.534, and a 4 s clip made a 3D video at scale 1.533 with
+525 inliers. No fatal exceptions. Not yet run on the Nothing phone.
+
 ## 2026-11-24 - Release 0.77.0
 
 - Version 0.77.0 (versionCode 11): self-timer, time-lapse, grid and level, icons, landscape labels,

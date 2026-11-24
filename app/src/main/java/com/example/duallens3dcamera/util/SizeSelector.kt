@@ -30,8 +30,9 @@ object SizeSelector {
         return candidates.maxBy { it.width.toLong() * it.height.toLong() }
     }
 
-    fun chooseLargestYuvFourByThree(map: StreamConfigurationMap): Size {
-        val sizes = (map.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray()).toList()
+    fun chooseLargestYuvFourByThree(map: StreamConfigurationMap, maxEdge: Int = Int.MAX_VALUE): Size {
+        val sizes = (map.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray())
+            .filter { maxOf(it.width, it.height) <= maxEdge }
         if (sizes.isEmpty()) {
             // Safe fallback; should not happen on most devices.
             return Size(1920, 1440)
@@ -49,10 +50,12 @@ object SizeSelector {
      */
     fun chooseLargestCommonYuvFourByThree(
         wideMap: StreamConfigurationMap,
-        ultraMap: StreamConfigurationMap
+        ultraMap: StreamConfigurationMap,
+        maxEdge: Int = Int.MAX_VALUE
     ): Size? {
-        val wideSizes = (wideMap.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray()).toList()
-        val ultraSizes = (ultraMap.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray()).toList()
+        fun fits(s: Size) = maxOf(s.width, s.height) <= maxEdge
+        val wideSizes = (wideMap.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray()).filter(::fits)
+        val ultraSizes = (ultraMap.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray()).filter(::fits)
         if (wideSizes.isEmpty() || ultraSizes.isEmpty()) {
             return null
         }

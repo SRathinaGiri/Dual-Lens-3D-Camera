@@ -1,6 +1,7 @@
 package com.example.duallens3dcamera.camera
 
 import android.hardware.camera2.CaptureResult
+import com.example.duallens3dcamera.settings.AppSettings
 import com.example.duallens3dcamera.util.ExposureMath
 import android.content.Context
 import android.graphics.Rect
@@ -707,20 +708,42 @@ class StereoCameraController(
         )
     }
 
+    /**
+     * After a still capture error: saves a limit just below the current still size (never under
+     * 1600 px, the size the compatibility test uses) and returns the new size, or null if there is
+     * nothing smaller to try.
+     */
+    private fun shrinkStillSizeLocked(): Size? {
+        val wMap = wideMap ?: return null
+        val uMap = ultraMap ?: return null
+        val current = maxOf(yuvWideSize.width, yuvWideSize.height, yuvUltraSize.width, yuvUltraSize.height)
+        // Drop at least ~20% each step so a long list of near-identical sizes doesn't take many tries.
+        val limit = minOf(current - 1, (current * 0.8).toInt())
+        if (limit < 1600) return null
+        val next = SizeSelector.chooseLargestCommonYuvFourByThree(wMap, uMap, limit)
+            ?: SizeSelector.chooseLargestYuvFourByThree(wMap, limit)
+        if (maxOf(next.width, next.height) < 1600) return null
+        AppSettings.prefs(context).edit().putInt(AppSettings.KEY_STILL_MAX_EDGE, maxOf(next.width, next.height)).apply()
+        Log.w(TAG, "Still size limit lowered to ${maxOf(next.width, next.height)} px after a capture failure")
+        return next
+    }
+
     private fun recomputeStillSizesLocked() {
         val wMap = wideMap ?: return
         val uMap = ultraMap ?: return
 
+        val cap = AppSettings.prefs(context).getInt(AppSettings.KEY_STILL_MAX_EDGE, 0)
+            .let { if (it <= 0) Int.MAX_VALUE else it }
         when (photoStillResolutionMode) {
             StillResolutionMode.LARGEST_COMMON -> {
-                val commonYuv = SizeSelector.chooseLargestCommonYuvFourByThree(wMap, uMap)
+                val commonYuv = SizeSelector.chooseLargestCommonYuvFourByThree(wMap, uMap, cap)
                 if (commonYuv != null) {
                     yuvWideSize = commonYuv
                     yuvUltraSize = commonYuv
                 } else {
                     // If there is no intersection, we have no choice but to fall back to per-lens.
-                    yuvWideSize = SizeSelector.chooseLargestYuvFourByThree(wMap)
-                    yuvUltraSize = SizeSelector.chooseLargestYuvFourByThree(uMap)
+                    yuvWideSize = SizeSelector.chooseLargestYuvFourByThree(wMap, cap)
+                    yuvUltraSize = SizeSelector.chooseLargestYuvFourByThree(uMap, cap)
                     callback.onFallbackSizeUsed(
                         "No common still YUV size found; using largest-per-lens still sizes instead."
                     )
@@ -737,8 +760,8 @@ class StereoCameraController(
             }
 
             StillResolutionMode.LARGEST_PER_LENS -> {
-                yuvWideSize = SizeSelector.chooseLargestYuvFourByThree(wMap)
-                yuvUltraSize = SizeSelector.chooseLargestYuvFourByThree(uMap)
+                yuvWideSize = SizeSelector.chooseLargestYuvFourByThree(wMap, cap)
+                yuvUltraSize = SizeSelector.chooseLargestYuvFourByThree(uMap, cap)
                 rawWideSize = SizeSelector.chooseLargestRaw(wMap)
                 rawUltraSize = SizeSelector.chooseLargestRaw(uMap)
             }
@@ -1887,8 +1910,26 @@ class StereoCameraController(
                         request: CaptureRequest,
                         failure: CaptureFailure
                     ) {
-                        callback.onError("Still capture failed: $failure")
+                        val reason = when (failure.reason) {
+                            CaptureFailure.REASON_ERROR -> "error"
+                            CaptureFailure.REASON_FLUSHED -> "flushed"
+                            else -> "reason ${failure.reason}"
+                        }
+                        val lens = failure.physicalCameraId?.let { " on lens $it" } ?: ""
+                        Log.e(TAG, "Still capture failed: $reason$lens, imageCaptured=${failure.wasImageCaptured()}, " +
+                            "YUV wide=$yuvWideSize ultra=$yuvUltraSize raw=$raw")
                         failAndCleanupCurrentPhoto()
+                        // Some phones list still sizes their HAL can't deliver for two lenses at
+                        // once. Step down to the next smaller size and remember it.
+                        val smaller = if (!raw && failure.reason == CaptureFailure.REASON_ERROR) shrinkStillSizeLocked() else null
+                        if (smaller != null) {
+                            callback.onError("This phone couldn't take ${yuvWideSize.width}x${yuvWideSize.height} photos; " +
+                                "switched to ${smaller.width}x${smaller.height}. Please take the photo again.")
+                            recomputeStillSizesLocked()
+                            createPreviewSession()
+                        } else {
+                            callback.onError("Still capture failed ($reason$lens).")
+                        }
                     }
 
                     override fun onCaptureSequenceCompleted(session: CameraCaptureSession, sequenceId: Int, frameNumber: Long) {

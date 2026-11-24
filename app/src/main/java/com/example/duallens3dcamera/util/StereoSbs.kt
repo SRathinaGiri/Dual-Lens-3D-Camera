@@ -74,6 +74,13 @@ object StereoSbs {
         return m
     }
 
+    /**
+     * Lowest believable ultrawide -> main scale. Normally ~0.75x of the field-of-view ratio, but
+     * some phones (e.g. Nothing Phone (4a), Qualcomm) already crop the ultrawide's physical stream
+     * to the main lens's field of view, so the measured scale is ~1.0. Accept that too.
+     */
+    internal fun minPlausibleScale(expectedScale: Double): Double = min(expectedScale * 0.75, 0.85)
+
     private val triedInit = AtomicBoolean(false)
     private val openCvReady = AtomicBoolean(false)
 
@@ -106,7 +113,7 @@ object StereoSbs {
 
         // ExpectedScale ~= 1 / ultra3aFraction (e.g. 1/0.5 = 2.0)
         // Allow some room but not insane values.
-        val minScale = expectedScale * 0.75
+        val minScale = minPlausibleScale(expectedScale)
         val maxScale = expectedScale * 1.35
         if (scale < minScale || scale > maxScale) return false
 
@@ -526,7 +533,7 @@ object StereoSbs {
             val movX = DoubleArray(n) { movPts[2 * it] }; val movY = DoubleArray(n) { movPts[2 * it + 1] }
             val fit = StereoAlignMath.refine(refX, refY, movX, movY, base, uW, uH, fitDistortion = true)
             val fm = fit.model
-            val plausible = fm.scale in expectedScale * 0.75..expectedScale * 1.35 && abs(fm.rotationDeg) <= 5.0
+            val plausible = fm.scale in minPlausibleScale(expectedScale)..expectedScale * 1.35 && abs(fm.rotationDeg) <= 5.0
             // The lenses are rigid, so a strong earlier fit is better than a weak current one
             // (e.g. a hand right in front of the lenses, or a blank wall).
             val reuse = lastStrongModel?.takeIf { it.second == Triple(wW, uW, uH) }?.first

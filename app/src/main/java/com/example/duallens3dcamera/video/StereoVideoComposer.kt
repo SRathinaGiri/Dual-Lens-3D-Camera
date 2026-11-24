@@ -137,7 +137,8 @@ class StereoVideoComposer(
                 base.toBooleanArray(), uW, uH, fitDistortion = true
             )
             val md = fit.model
-            require(md.scale in 1.0..2.5 && abs(md.rotationDeg) < 5.0 && fit.inlierCount >= 25) {
+            // ~1.0 happens when the phone crops the ultrawide stream to the main lens's view.
+            require(md.scale in 0.85..2.5 &&abs(md.rotationDeg) < 5.0 && fit.inlierCount >= 25) {
                 "Implausible alignment (scale ${"%.3f".format(md.scale)}, rotation ${"%.2f".format(md.rotationDeg)})"
             }
             val d = StereoAlignMath.horizontalOffsets(rx.toDoubleArray(), fit.corrX, fit.corrY, md.a, md.b)

@@ -71,6 +71,8 @@ object AppSettings {
     const val KEY_MAIN_FOCUS_MODE = "main_focus_mode"         // auto | match_uw | lock
     const val KEY_PRO_ISO = "pro_iso"                         // Int, 0 = auto
     const val KEY_PRO_SHUTTER_NS = "pro_shutter_ns"           // Long, 0 = auto
+    /** Longest still-photo edge this phone managed; set after a capture failure at a larger size. 0 = no limit. */
+    const val KEY_STILL_MAX_EDGE = "still_max_edge"
 
     // Debugging (Advanced)
     const val KEY_DEBUG_VIDEO_LOG_ENABLED = "debug_video_log_enabled"
