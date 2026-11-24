@@ -33,7 +33,9 @@ Reported working with the original app (not yet re-tested with this fork's 3D co
 Samsung S22 (photos only), S24 and Fold5; Pixel 7, 7a, 7 Pro, 8, 8 Pro, 9a and 10.
 
 **Tried it on another phone?** Run the Compatibility test (below), take a 3D photo and a 3D video,
-and send the report and a screenshot of the result. Your model will be added to the table.
+and post the report and a screenshot of the result in a
+[new issue](https://github.com/SRathinaGiri/Dual-Lens-3D-Camera/issues/new). Your model will be
+added to the table.
 
 Other phones: run **Settings > 3D output > Compatibility test** (see below). It reports whether
 3D photos, 3D video and live 3D preview work, and can share the report.
