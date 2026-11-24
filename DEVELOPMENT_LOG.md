@@ -12,6 +12,13 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Release 0.78.0
+
+- Version 0.78.0 (versionCode 15): experimental separate-camera mode (entry below); README
+  "Supported phones" describes it and credits InzamamShaikh567.
+- `:app:assembleRelease :app:testAgentUnitTest :app:lintRelease` pass; `apksigner` confirms the
+  fork's release certificate (`b9661ab3…6df6d`).
+
 ## 2026-11-24 - Separate-camera mode (phones without a working paired camera)
 
 - Goal: support phones like the Redmi Note 10 Pro (paired cameras fail with -38) and the Galaxy

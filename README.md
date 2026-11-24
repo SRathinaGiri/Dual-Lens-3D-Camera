@@ -40,6 +40,14 @@ added to the table.
 Other phones: run **Settings > 3D output > Compatibility test** (see below). It reports whether
 3D photos, 3D video and live 3D preview work, and can share the report.
 
+**Separate-camera mode (experimental, since 0.78.0).** Some phones have no paired camera, or one
+that refuses to stream both lenses (for example the Redmi Note 10 Pro and the Galaxy A72). On
+those, the app opens the main and ultrawide as two separate cameras, if the phone allows that.
+3D photos and two-file video for "Make 3D video" work; RAW, 2x, Pro and live 3D preview don't.
+The two lenses aren't synced in hardware, so fast motion may not line up. Phones whose paired
+camera works are not affected. Idea from
+[InzamamShaikh567](https://github.com/InzamamShaikh567)'s fork, written fresh for this app.
+
 Sync between the two lenses is best on the Pixel 7 series (~1-4 ms for photos, ~4 ms for video).
 On the Redmi Note 12 Pro both lenses are triggered by the same capture (0 ms apart).
 
