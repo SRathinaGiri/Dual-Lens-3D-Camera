@@ -12,6 +12,29 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-25 - Separate-camera mode: 2D fallback on one-camera phones; 3DDualCam comparison
+
+- Issue #1 result (Galaxy A72, 0.77.2 and 0.78.0): opening the ultrawide (ID 2) while the main
+  (ID 0) is open fails with "too many cameras open". Samsung reserves its multi-lens camera (ID 4,
+  "system only") for its own app; the issue was closed. Samsung's own "3D Capture" (Camera
+  Assistant) is reported only on the Galaxy S25 Ultra.
+- `SeparateCameraController`: when the second camera is refused (or opening it evicts the first)
+  before both were ever open together, the app now closes the ultrawide, shows "This phone lets
+  apps use only one rear camera at a time, so 3D photos and videos aren't possible on it", and keeps
+  (or reopens) the main camera with a plain 2D preview instead of a black screen. PHOTO/RECORD
+  then report that 3D isn't possible. The result is kept across pause/resume.
+- Verified on the Redmi Note 12 Pro with a temporary build forcing separate mode: 2D preview
+  appeared after the refusal, PHOTO saved nothing, no FATAL. Normal build reinstalled (paired
+  camera 4).
+- Compared with Masuji Suto's 3DDualCam (`jp.suto.dualcam`, StereoPhoto Maker author): it also
+  uses two rear lenses at once, shows green/orange/red at start, saves SBS JPEG/MP4 directly and
+  aligns with manual Ratio/X/Y sliders (plus "Auto" ratio). On the Redmi Note 12 Pro it shows
+  green: its own diagnostic probes IDs 0-99, finds hidden logical camera 4 (physical 0+2, sync
+  APPROXIMATE), reports every pair of direct opens failing with code 2 (MAX_CAMERAS_IN_USE), and
+  streams both physical cameras through ID 4 (21 frames each in 1.2 s; still 4096x3072 + 3264x2448).
+  Same route as this app. Ideas worth borrowing: `isSessionConfigurationSupported` queries in the
+  Compatibility test, and a manual alignment override.
+
 ## 2026-11-24 - Release 0.78.0
 
 - Version 0.78.0 (versionCode 15): experimental separate-camera mode (entry below); README

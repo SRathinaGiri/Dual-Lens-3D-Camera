@@ -65,7 +65,16 @@ class SeparateCameraController(
         private const val AUDIO_BITRATE_BPS = 128_000
         private const val STILL_TIMEOUT_MS = 4000L
         private val KEEPALIVE_SIZE = Size(640, 480)
+        private const val ONE_CAMERA_MESSAGE =
+            "This phone lets apps use only one rear camera at a time, so 3D photos and videos aren't possible on it. Showing the main camera only."
+        private const val NO_3D_MESSAGE =
+            "3D isn't possible on this phone: it allows only one rear camera at a time."
     }
+
+    /** True once both cameras have been open together. */
+    private var bothOpened = false
+    /** True when the phone refused two cameras: 2D preview only, capture disabled. */
+    @Volatile private var singleCameraOnly = false
 
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private var thread: HandlerThread? = null
@@ -165,6 +174,8 @@ class SeparateCameraController(
         if (params.rawMode) callback.onStatus("RAW isn't available in separate-camera mode; using JPG.")
         if (params.zoom2xEnabled) callback.onStatus("2x isn't available in separate-camera mode.")
 
+        // singleCameraOnly is kept across pause/resume: the phone's answer won't change.
+        bothOpened = false
         thread = HandlerThread("SeparateCamera").also { it.start() }
         handler = Handler(requireNotNull(thread).looper)
 
@@ -213,36 +224,92 @@ class SeparateCameraController(
         override fun onOpened(camera: CameraDevice) {
             if (isMain) {
                 mainDevice = camera
+                if (singleCameraOnly) {
+                    // Reopened after the phone refused two cameras: plain 2D preview.
+                    createMainOnlyPreview()
+                    return
+                }
                 // Open the ultrawide only once the main is open: that is the order the
                 // Compatibility test checks.
                 try {
                     cameraManager.openCamera(pair.ultraId, deviceCallback(isMain = false), handler)
                 } catch (e: Exception) {
-                    callback.onError("Could not open the ultrawide: ${e.message}")
+                    enterSingleCameraMode("ultrawide open threw ${e.message}")
                 }
             } else {
                 ultraDevice = camera
+                bothOpened = true
                 createPreviewSessions()
             }
         }
 
-        override fun onDisconnected(camera: CameraDevice) {
-            try { camera.close() } catch (_: Exception) {}
-            if (isMain) mainDevice = null else ultraDevice = null
-            callback.onError(if (isMain) "Main camera disconnected." else
-                "The phone closed the ultrawide (it may allow only one rear camera at a time).")
-        }
+        override fun onDisconnected(camera: CameraDevice) = lost(camera, "disconnected")
 
-        override fun onError(camera: CameraDevice, error: Int) {
+        override fun onError(camera: CameraDevice, error: Int) = lost(camera, when (error) {
+            ERROR_MAX_CAMERAS_IN_USE -> "too many cameras open"
+            ERROR_CAMERA_IN_USE -> "camera in use"
+            ERROR_CAMERA_DISABLED -> "camera disabled"
+            else -> "error $error"
+        })
+
+        private fun lost(camera: CameraDevice, what: String) {
             try { camera.close() } catch (_: Exception) {}
-            if (isMain) mainDevice = null else ultraDevice = null
-            val what = when (error) {
-                ERROR_MAX_CAMERAS_IN_USE -> "too many cameras open"
-                ERROR_CAMERA_IN_USE -> "camera in use"
-                ERROR_CAMERA_DISABLED -> "camera disabled"
-                else -> "error $error"
+            if (isMain && mainDevice === camera) mainDevice = null
+            if (!isMain && ultraDevice === camera) ultraDevice = null
+            if (!bothOpened && !singleCameraOnly) {
+                // While the second camera was being opened: the phone allows only one rear
+                // camera at a time (Galaxy A72, Redmi Note 12 Pro). Keep a 2D preview.
+                enterSingleCameraMode("${if (isMain) "main" else "ultrawide"} $what")
+            } else {
+                callback.onError("${if (isMain) "Main camera" else "Ultrawide"}: $what.")
             }
-            callback.onError("${if (isMain) "Main camera" else "Ultrawide"}: $what.")
+        }
+    }
+
+    /**
+     * The phone refused to run both cameras. Close the ultrawide, explain once, and keep (or
+     * reopen) the main camera with a plain preview so the screen isn't black.
+     */
+    @SuppressLint("MissingPermission")
+    private fun enterSingleCameraMode(detail: String) {
+        if (singleCameraOnly) return
+        singleCameraOnly = true
+        Log.w(TAG, "Only one rear camera at a time ($detail); 2D preview only")
+        try { ultraDevice?.close() } catch (_: Exception) {}
+        ultraDevice = null
+        callback.onError(ONE_CAMERA_MESSAGE)
+        if (mainDevice != null) {
+            createMainOnlyPreview()
+        } else {
+            // Opening the ultrawide evicted the main camera: reopen it on its own.
+            try {
+                cameraManager.openCamera(pair.mainId, deviceCallback(isMain = true), handler)
+            } catch (e: Exception) {
+                Log.e(TAG, "Reopening the main camera failed: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun createMainOnlyPreview() {
+        val main = mainDevice ?: return
+        val preview = previewSurface ?: return
+        val h = handler ?: return
+        closeSessions()
+        surfaceTexture?.setDefaultBufferSize(previewSize.width, previewSize.height)
+        configure(main, listOf(preview), "main camera") { s ->
+            mainSession = s
+            try {
+                val b = main.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                    addTarget(preview)
+                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                    commonSettings(this, mainChars, previewFps, video = false)
+                    applyTorch(this)
+                }
+                mainRepeating = b
+                s.setRepeatingRequest(b.build(), null, h)
+            } catch (e: Exception) {
+                Log.e(TAG, "Main-only preview failed: ${e.message}", e)
+            }
         }
     }
 
@@ -473,6 +540,11 @@ class SeparateCameraController(
     override fun captureStereoPhoto(timestampForFilename: String, raw: Boolean) {
         val h = handler ?: run { callback.onError("Camera not running."); callback.onPhotoCaptureDone(); return }
         h.post {
+            if (singleCameraOnly) {
+                callback.onError(NO_3D_MESSAGE)
+                callback.onPhotoCaptureDone()
+                return@post
+            }
             val main = mainDevice; val ultra = ultraDevice
             val ms = mainSession; val us = ultraSession
             val mr = mainStillReader; val ur = ultraStillReader
@@ -613,6 +685,11 @@ class SeparateCameraController(
     override fun startRecording(timestampForFilename: String) {
         val h = handler ?: run { callback.onError("Camera not running."); return }
         h.post {
+            if (singleCameraOnly) {
+                callback.onError(NO_3D_MESSAGE)
+                callback.onRecordingStopped()
+                return@post
+            }
             val main = mainDevice; val ultra = ultraDevice; val preview = previewSurface
             if (isRecording || main == null || ultra == null || preview == null) {
                 callback.onError(if (isRecording) "Already recording." else "Camera not ready.")
