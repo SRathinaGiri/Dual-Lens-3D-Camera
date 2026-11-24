@@ -12,6 +12,14 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Release 0.77.3
+
+- Version 0.77.3 (versionCode 14): Compatibility test reopens the camera per step and falls back
+  to the separate-camera check (entry below), for the Redmi Note 10 Pro tester. No capture
+  behavior changed.
+- `:app:assembleRelease :app:testAgentUnitTest :app:lintRelease` pass; `apksigner` confirms the
+  fork's release certificate (`b9661ab3…6df6d`).
+
 ## 2026-11-24 - Compatibility test: reopen per step, separate-camera fallback
 
 - Prompted by a Redmi Note 10 Pro (`sweet`, Qualcomm, Android 13) report on 0.77.2: paired
