@@ -22,6 +22,8 @@ import android.util.Size
 import android.view.Surface
 import com.example.duallens3dcamera.camera.LensDiscovery
 import com.example.duallens3dcamera.camera.LivePreview3d
+import com.example.duallens3dcamera.settings.AppSettings
+import com.example.duallens3dcamera.util.SizeSelector
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -110,6 +112,11 @@ class CompatibilityTester(private val context: Context, private val log: (String
             if (rig.logicalIsHidden) notes += "Uses a hidden paired camera (found by probing IDs)."
             log("")
 
+            // 2a) Ask the phone first which of the app's stream combinations it supports.
+            log("[2a] Stream combinations the phone says it supports (asked, not yet tried)")
+            withCamera(rig.logicalRearId) { querySessions(it, rig, wideChars, ultraChars); Support.YES }
+            log("")
+
             // Each step gets a freshly opened camera: a failed session can close the device
             // (e.g. "Function not implemented (-38)" on the Redmi Note 10 Pro), and later steps
             // must not inherit that.
@@ -168,6 +175,68 @@ class CompatibilityTester(private val context: Context, private val log: (String
     }
 
     // ------------------------------------------------------------------ steps
+
+    /**
+     * Asks the camera (isSessionConfigurationSupported) whether the sessions the app builds would
+     * work, without creating them. Sizes follow the app's current settings. Encoder streams are
+     * stood in for by preview-type surfaces of the record size. A "no" here predicts failures like
+     * the Redmi Note 10 Pro's "-38" without triggering them; many phones can't answer at all.
+     */
+    private fun querySessions(camera: CameraDevice, rig: LensDiscovery.StereoRig,
+                              wideChars: CameraCharacteristics, ultraChars: CameraCharacteristics) {
+        val wMap = wideChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val uMap = ultraChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        if (wMap == null || uMap == null) { log("  ✗ No stream sizes."); return }
+        val cap = AppSettings.prefs(context).getInt(AppSettings.KEY_STILL_MAX_EDGE, 0).let { if (it <= 0) Int.MAX_VALUE else it }
+        val still = SizeSelector.chooseLargestCommonYuvFourByThree(wMap, uMap, cap)
+            ?: SizeSelector.chooseLargestYuvFourByThree(wMap, cap)
+        val record = SizeSelector.chooseCommonPrivateSizeAtFps(
+            wMap, uMap, AppSettings.getVideoResolution(context),
+            AppSettings.getVideoResolution(context).width, AppSettings.getVideoResolution(context).height,
+            AppSettings.getVideoFps(context)
+        ).first
+        val preview = AppSettings.getPreviewResolution(context)
+        val small = LivePreview3d.pickSmallSize(wMap.getOutputSizes(ImageFormat.YUV_420_888)) ?: Size(640, 480)
+
+        val textures = ArrayList<SurfaceTexture>()
+        val readers = ArrayList<ImageReader>()
+        fun tex(s: Size) = Surface(SurfaceTexture(false).also { it.setDefaultBufferSize(s.width, s.height); textures += it })
+        fun yuv(s: Size) = ImageReader.newInstance(s.width, s.height, ImageFormat.YUV_420_888, 2).also { readers += it }.surface
+        fun out(surface: Surface, physical: String?) = OutputConfiguration(surface).apply { if (physical != null) setPhysicalCameraId(physical) }
+        val w = rig.wide1xId; val u = rig.ultraId
+
+        val cases = listOf(
+            "Photo: preview + 2 stills ${still.width}x${still.height}" to
+                listOf(out(tex(preview), w), out(yuv(still), w), out(yuv(still), u)),
+            "Video: preview + 2 streams ${record.width}x${record.height}" to
+                listOf(out(tex(preview), w), out(tex(record), w), out(tex(record), u)),
+            "Video with workaround (main from the paired stream)" to
+                listOf(out(tex(preview), w), out(tex(record), null), out(tex(record), u)),
+            "Live 3D preview: 2 small + 2 stills" to
+                listOf(out(yuv(small), w), out(yuv(small), u), out(yuv(still), w), out(yuv(still), u))
+        )
+        try {
+            for ((name, outputs) in cases) {
+                val answer = try {
+                    val config = android.hardware.camera2.params.SessionConfiguration(
+                        android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR, outputs,
+                        { it.run() }, object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(s: CameraCaptureSession) {}
+                            override fun onConfigureFailed(s: CameraCaptureSession) {}
+                        })
+                    if (camera.isSessionConfigurationSupported(config)) "✓ supported" else "✗ NOT supported"
+                } catch (_: UnsupportedOperationException) {
+                    "? the phone can't answer this question"
+                } catch (e: Exception) {
+                    "? query failed: ${e.javaClass.simpleName}: ${e.message}"
+                }
+                log("  $name: $answer")
+            }
+        } finally {
+            readers.forEach { it.close() }
+            textures.forEach { it.release() }
+        }
+    }
 
     private fun testPhoto(camera: CameraDevice, rig: LensDiscovery.StereoRig,
                           wideChars: CameraCharacteristics, ultraChars: CameraCharacteristics): Support {

@@ -12,6 +12,19 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-25 - Compatibility test: ask the phone before trying ([2a])
+
+- Idea from 3DDualCam's diagnostic. New step [2a] opens the paired camera and calls
+  `CameraDevice.isSessionConfigurationSupported` (API 29) for the app's four sessions, using the
+  app's current sizes: photo (preview + 2 YUV stills), video (preview + one stream per lens),
+  video with the workaround (main stream unbound), and live 3D (2 small + 2 stills). Encoder
+  streams are stood in for by SurfaceTexture surfaces of the record size. Answers: supported,
+  NOT supported, or "can't answer" (UnsupportedOperationException).
+- Redmi Note 12 Pro: all four "supported", yet the plain video session still records blank main
+  frames in [4]. So the query predicts refused sessions (like the Note 10 Pro's -38), not sessions
+  that are accepted but deliver nothing; the real tests stay necessary. Rest of the test
+  unchanged; no FATAL.
+
 ## 2026-11-25 - Separate-camera mode: 2D fallback on one-camera phones; 3DDualCam comparison
 
 - Issue #1 result (Galaxy A72, 0.77.2 and 0.78.0): opening the ultrawide (ID 2) while the main
