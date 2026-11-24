@@ -12,6 +12,120 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Main lens focus modes and Pro mode (ISO / shutter)
+
+Owner's request: an option to make the main lens's focus match the fixed-focus ultrawide, with
+everything else automatic; and a Pro mode for ISO and shutter only.
+
+**Hardware facts** (`dumpsys media.camera`, Redmi Note 12 Pro):
+
+| | Main (0) | Ultrawide (2) | Logical (4) |
+|---|---|---|---|
+| ISO | 50–6400 | 50–2000 | 100–3200 |
+| Exposure | 0.1 ms – 30 s | 0.1 ms – 0.8 s | – |
+| Aperture | f/1.88 | f/2.2 | – |
+| Focus | AF modes 0–4, min focus 10 | AF OFF only, min focus 0 (fixed focus) | – |
+| Hyperfocal | 0.1 | 1.11 (≈0.9 m) | – |
+| Manual sensor | yes | yes | yes |
+
+Focus calibration is UNCALIBRATED on both lenses.
+
+**Implementation** (`StereoCameraController`):
+- `applyManualControls()` is applied last to every request: preview, still, record and the
+  ultrawide prime.
+- `MainFocusMode`:
+  - AUTO (unchanged);
+  - MATCH_ULTRAWIDE: AF OFF, `LENS_FOCUS_DISTANCE` = the main lens's own
+    `LENS_INFO_HYPERFOCAL_DISTANCE`, which is in the lens's own units, so it works uncalibrated;
+  - LOCK: `lockFocusForSequence()` copies the last AF focus distance at RECORD or time-lapse start;
+    `unlockFocusForSequence()` runs at the end.
+- Pro: `ExposureMath.resolve()` (unit-tested). Both values set are used as is. With only one set,
+  the other comes from the last auto-exposure reading, keeping ISO × time constant.
+  - The result is clamped to the range both lenses support (ISO 100–2000, up to 0.8 s) and, for
+    video, to one frame period.
+  - AE is OFF; `SENSOR_FRAME_DURATION` is max(exposure, frame period).
+- A `meterCallback` on the preview's repeating request records AE and AF values from the main
+  lens's physical result, and logs "Manual check" (logical, main and ultra) every 2 s while
+  anything is manual.
+- **Bug found and fixed:** when the app starts with only one Pro value saved there is no reading
+  yet; the fallback guess gave ISO 1667 (blown out). Changing a Pro value with the other on AUTO now
+  re-meters: AE runs until CONVERGED (≥4 frames) or 20 frames, then the manual exposure is applied.
+  Verified: metered ISO 222 at 1/99 s, then ISO 280 at a fixed 1/125 s.
+
+**UI:**
+- PRO button in the top bar (`weightSum` 6). Top-bar side padding is zeroed in code because the
+  MaterialButton style's padding ellipsised "JPG"/"PRO" at 180 px width.
+- Pro panel over the preview bottom: square chips that rotate with the landscape UI and scroll to
+  the selected value. 1x/2x sits above the panel.
+- "Main lens focus" ListPreference in Settings → 3D output.
+
+**Verification on the phone:**
+- Preview at ISO 200, 1/125: the main lens reported exactly ISO 200, 8 000 000 ns, AF mode OFF,
+  focus 0.1 (match-UW).
+- Still with ISO 200, 1/125: main ISO 200 at 1/125; **ultra ISO 156 at 1/125**. The HAL re-scales
+  the ultrawide's ISO.
+- **Rejected:** a still request created with both physical IDs (`createCaptureRequest(template, ids)`
+  plus `setPhysicalCameraKey`) still gave 156, so it was removed. Shutter time is identical on both
+  lenses.
+- Lock at start: "Focus locked at 2.61" at RECORD. Both 2560×1920 videos had 190 frames each (12.8 s)
+  and looked correct. The main file is smaller because of a plain white scene.
+- `ExposureMathTest` (8), `LevelMathTest` (7) and the existing tests pass; lint is clean of errors.
+
+## 2026-11-24 - Self-timer, time-lapse, grid and spirit level
+
+Owner's request: a 3/5/10 s self-timer, a time-lapse with user-chosen interval and frame count that
+keeps the phone awake (assume it is charging), and a 3x3 grid or a gyro level that shows 0° in green.
+
+- **Tools row** under the preview: Torch, Timer, Grid, Time-lapse (labels auto-size, because the
+  owner's phone uses font scale 1.17).
+- **Self-timer** (`KEY_SELF_TIMER_SEC`): countdown TextView plus a ToneGenerator beep. PHOTO becomes
+  CANCEL; leaving the app cancels.
+- **Time-lapse** (`capture/TimeLapseRunner`): frame i is planned at start + i·interval on the main
+  looper, so timing does not drift. A frame that falls due while the previous capture is still busy
+  retries every 250 ms. Frames reuse `captureStereoPhoto` with names `<start>_TL%04d`.
+  - `FLAG_KEEP_SCREEN_ON` keeps the activity in front with no lock or Doze, and window brightness
+    drops to 0.05 after 20 s (tap the status to brighten).
+  - Minimum interval is 5 s with 3D correction on (correction runs about 2 s per photo on the
+    single SBS executor) and 2 s with it off.
+  - Leaving the app stops the run. A foreground service was not used: the camera already closes in
+    `onPause`, and the owner wants it to run unattended on a charger.
+- **Grid and level** (`ui/LevelGridOverlay`, `util/LevelMath`): the overlay sits over the preview
+  only. The level uses `TYPE_GRAVITY` (accelerometer fallback) with light smoothing.
+  - It snaps to the nearest right angle, so landscape works, and draws the true horizon at canvas
+    angle atan2(gx, gy).
+  - It turns green within 1° and is hidden when the phone is flat.
+  - The same reading rotates the countdown digits upright.
+- **Verification on the Redmi Note 12 Pro (agent build).**
+  - `LevelMathTest` (6 tests) passes, and assemble and lint pass.
+  - Grid+Level showed green at 0.5–0.6° with the phone propped in landscape.
+  - A 3 s timer photo saved about 3 s after the tap.
+  - A 6-frame, 5 s run saved TL0001–TL0006, each processed about 5.0 s apart (±0.2 s).
+  - A 16-frame, 5 s run went past the phone's 60 s screen timeout: `mWakefulness=Awake`, brightness
+    override 0.05 while running, and cleared afterwards. No crashes.
+- **Icons (follow-up):** Material icons (Apache 2.0) were added as vector drawables:
+  - photo_camera, videocam and stop on PHOTO and RECORD (stop while recording, counting down
+    or running a time-lapse);
+  - flash, timer, grid and timelapse above the tool labels.
+  The main row shrank from 2:1 to 1.4:1 against the tools row. Labels are a fixed 12 sp and
+  shortened ("Grid+Lvl", "T-lapse") so they fit at the owner's 1.17 font scale; autosizing gave
+  each button a different size.
+- **Landscape labels (follow-up, owner's request):** the activity stays portrait-locked; only
+  content turns.
+  - `ui/RotatingButton` (a MaterialButton) rotates the canvas inside `onDraw`. The background is
+    drawn earlier in `View.draw`, so only the text and icon turn, while the background and touch
+    area stay put.
+  - `LevelMath.uiRotation` picks 0, ±90 or 180 from the gravity reading, switching only within
+    35° of the new orientation (unit-tested). A flat phone keeps the current value.
+  - All 11 buttons animate their content (220 ms, shortest direction); the countdown TextView
+    rotates with them.
+  - The time-lapse bar is rotated and moved to the preview edge that is "up" for the user.
+  - SETTINGS shows as a gear only in landscape, because the turned word doesn't fit the 48 dp bar.
+    "STOP TIME-LAPSE" becomes "STOP".
+  - Checked on the Redmi propped in landscape: all labels, the level text and the time-lapse bar
+    read upright and consistent. Not turned: AlertDialogs, the Settings screen and toasts.
+- **Automation note:** HyperOS dropped the first injected tap after each `am start` ("Dropping event
+  because the pointer is not down"); a second tap works. This was not seen as an app bug.
+
 ## 2026-11-23 - Release 0.76.1
 
 - Version 0.76.1 (versionCode 10), containing the recording-stop and encoder-size fix below.

@@ -1,5 +1,7 @@
 package com.example.duallens3dcamera.camera
 
+import android.hardware.camera2.CaptureResult
+import com.example.duallens3dcamera.util.ExposureMath
 import android.content.Context
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
@@ -415,6 +417,206 @@ class StereoCameraController(
         try { live3d?.close() } catch (_: Exception) {}
         live3d = null
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Main-lens focus mode and Pro (manual ISO / shutter)
+    // ---------------------------------------------------------------------------------------------
+
+    enum class MainFocusMode(val prefValue: String) {
+        /** Continuous autofocus (the original behaviour). */
+        AUTO("auto"),
+        /** Main lens fixed at its hyperfocal distance: sharp from far-ish to infinity, like the fixed-focus ultrawide. */
+        MATCH_ULTRAWIDE("match_uw"),
+        /** Autofocus until a recording or time-lapse starts, then hold that focus until it ends. */
+        LOCK("lock");
+
+        companion object {
+            fun fromPref(v: String?) = entries.firstOrNull { it.prefValue == v } ?: AUTO
+        }
+    }
+
+    @Volatile private var mainFocusMode = MainFocusMode.AUTO
+    @Volatile private var lockedFocus: Float? = null
+    @Volatile private var proIso: Int? = null
+    @Volatile private var proExposureNs: Long? = null
+
+    // Latest readings from the preview (auto-exposure / autofocus), used to derive Pro values.
+    @Volatile private var meteredIso: Int? = null
+    @Volatile private var meteredExposureNs: Long? = null
+    @Volatile private var meteredMainFocus: Float? = null
+    private var lastManualLogMs = 0L
+
+    // When one Pro value is AUTO it is derived from a fresh auto-exposure reading: auto-exposure
+    // runs for a moment (until converged or ~20 frames) before the manual exposure is applied.
+    @Volatile private var remetering = false
+    private var remeterFrames = 0
+
+    /** Records what auto-exposure / autofocus chose, and logs what each lens really used. */
+    private val meterCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(s: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            val manual = request.get(CaptureRequest.CONTROL_AE_MODE) == CaptureRequest.CONTROL_AE_MODE_OFF
+            val wideResult: CaptureResult = result.physicalCameraResults[widePhysicalId] ?: result
+            if (!manual) {
+                (wideResult.get(CaptureResult.SENSOR_SENSITIVITY) ?: result.get(CaptureResult.SENSOR_SENSITIVITY))?.let { meteredIso = it }
+                (wideResult.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: result.get(CaptureResult.SENSOR_EXPOSURE_TIME))?.let { meteredExposureNs = it }
+                if (remetering) {
+                    remeterFrames++
+                    val converged = result.get(CaptureResult.CONTROL_AE_STATE) == CaptureResult.CONTROL_AE_STATE_CONVERGED
+                    if ((converged && remeterFrames >= 4) || remeterFrames >= 20) {
+                        remetering = false
+                        Log.i(TAG, "Metered iso=$meteredIso exp=$meteredExposureNs after $remeterFrames frames")
+                        cameraHandler?.post { updateManualOnRepeating() }
+                    }
+                }
+            }
+            if (request.get(CaptureRequest.CONTROL_AF_MODE) != CaptureRequest.CONTROL_AF_MODE_OFF) {
+                (wideResult.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: result.get(CaptureResult.LENS_FOCUS_DISTANCE))?.let { meteredMainFocus = it }
+            }
+            // Diagnostics: confirm both physical lenses follow manual settings (throttled).
+            val now = android.os.SystemClock.elapsedRealtime()
+            if ((manual || mainFocusMode != MainFocusMode.AUTO) && now - lastManualLogMs > 2000) {
+                lastManualLogMs = now
+                fun d(r: CaptureResult?) = if (r == null) "n/a" else
+                    "iso=${r.get(CaptureResult.SENSOR_SENSITIVITY)} exp=${r.get(CaptureResult.SENSOR_EXPOSURE_TIME)} " +
+                        "focus=${r.get(CaptureResult.LENS_FOCUS_DISTANCE)} afMode=${r.get(CaptureResult.CONTROL_AF_MODE)}"
+                Log.i(TAG, "Manual check: logical{${d(result)}} main{${d(result.physicalCameraResults[widePhysicalId])}} " +
+                    "ultra{${d(result.physicalCameraResults[ultraPhysicalId])}}")
+            }
+        }
+    }
+
+    fun setMainFocusMode(mode: MainFocusMode) {
+        mainFocusMode = mode
+        lockedFocus = null
+        cameraHandler?.post { updateManualOnRepeating() }
+    }
+
+    /** null = automatic. Fixing only one derives the other from the last auto-exposure reading. */
+    fun setProExposure(iso: Int?, exposureNs: Long?) {
+        proIso = iso
+        proExposureNs = exposureNs
+        // Exactly one value fixed: measure the scene again before deriving the other one.
+        if ((iso == null) != (exposureNs == null)) {
+            remeterFrames = 0
+            remetering = true
+        } else {
+            remetering = false
+        }
+        cameraHandler?.post { updateManualOnRepeating() }
+    }
+
+    /** "Lock at start" focus mode: freeze the main lens at its current autofocus position. */
+    fun lockFocusForSequence() {
+        if (mainFocusMode != MainFocusMode.LOCK) return
+        lockedFocus = meteredMainFocus
+        Log.i(TAG, "Focus locked at ${lockedFocus}")
+        cameraHandler?.post { updateManualOnRepeating() }
+    }
+
+    fun unlockFocusForSequence() {
+        if (lockedFocus == null) return
+        lockedFocus = null
+        cameraHandler?.post { updateManualOnRepeating() }
+    }
+
+    /** ISO / exposure ranges supported by BOTH lenses (null if unknown). */
+    fun commonIsoRange(): IntRange? = ExposureMath.intersect(
+        wideChars?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { it.lower..it.upper },
+        ultraChars?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { it.lower..it.upper }
+    )
+
+    fun commonExposureRangeNs(): LongRange? = ExposureMath.intersect(
+        wideChars?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { it.lower..it.upper },
+        ultraChars?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { it.lower..it.upper }
+    )
+
+    private fun supportsManualSensor(chars: CameraCharacteristics?): Boolean =
+        chars?.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+            ?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
+
+    /** True when Pro mode can work on this phone (both lenses and the logical camera allow manual sensor). */
+    fun proSupported(): Boolean =
+        supportsManualSensor(wideChars) && supportsManualSensor(ultraChars) &&
+            (logicalChars == null || supportsManualSensor(logicalChars)) &&
+            commonIsoRange() != null && commonExposureRangeNs() != null
+
+    /**
+     * Applies the main-lens focus mode and Pro exposure to a request. Call it last when building a
+     * request so it overrides the autofocus / auto-exposure defaults set earlier.
+     */
+    private fun applyManualControls(builder: CaptureRequest.Builder, isVideo: Boolean, videoFps: Int = 30) {
+        // ---- focus (main lens only; the ultrawide is fixed-focus on most phones) ----
+        val focus: Float? = when (mainFocusMode) {
+            MainFocusMode.AUTO -> null
+            MainFocusMode.MATCH_ULTRAWIDE -> matchUltrawideFocus()
+            MainFocusMode.LOCK -> lockedFocus
+        }
+        if (focus != null) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, focus)
+            setPhysical(builder, widePhysicalId, CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            setPhysical(builder, widePhysicalId, CaptureRequest.LENS_FOCUS_DISTANCE, focus)
+        }
+
+        // ---- Pro exposure (same ISO and shutter on both lenses) ----
+        if (!proSupported()) return
+        if (remetering) return // auto-exposure is measuring the scene; manual values follow
+        val isoRange = commonIsoRange() ?: return
+        val expRange = commonExposureRangeNs() ?: return
+        val framePeriod = ExposureMath.NS_PER_S / videoFps.coerceAtLeast(1)
+        val e = ExposureMath.resolve(
+            proIso, proExposureNs, meteredIso, meteredExposureNs, isoRange, expRange,
+            maxExposureNs = if (isVideo) framePeriod else null
+        ) ?: return
+        builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+        builder.set(CaptureRequest.SENSOR_SENSITIVITY, e.iso)
+        builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, e.exposureNs)
+        builder.set(CaptureRequest.SENSOR_FRAME_DURATION, if (isVideo) framePeriod else maxOf(e.exposureNs, framePeriod))
+        for (id in listOf(widePhysicalId, ultraPhysicalId)) {
+            setPhysical(builder, id, CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            setPhysical(builder, id, CaptureRequest.SENSOR_SENSITIVITY, e.iso)
+            setPhysical(builder, id, CaptureRequest.SENSOR_EXPOSURE_TIME, e.exposureNs)
+        }
+    }
+
+    /**
+     * Focus value for "Match ultrawide": the main lens's own hyperfocal distance (reported in the
+     * lens's focus units, so it stays right even when focus distances are uncalibrated). Focused
+     * there, everything from about half that distance to infinity is acceptably sharp.
+     */
+    private fun matchUltrawideFocus(): Float {
+        val h = wideChars?.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE) ?: 0f
+        return if (h > 0f) h else 0f
+    }
+
+    private fun updateManualOnRepeating() {
+        val sess = session ?: return
+        val handler = cameraHandler ?: return
+        val rb = repeatingBuilder ?: return
+        // Reset to automatic first, then re-apply whatever is currently chosen.
+        rb.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        rb.set(
+            CaptureRequest.CONTROL_AF_MODE,
+            if (isRecording) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        )
+        for (id in listOf(widePhysicalId, ultraPhysicalId)) {
+            setPhysical(rb, id, CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        }
+        setPhysical(
+            rb, widePhysicalId, CaptureRequest.CONTROL_AF_MODE,
+            if (isRecording) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        )
+        applyManualControls(rb, isVideo = isRecording, videoFps = requestedRecordFps)
+        applyTorch(rb)
+        try {
+            sess.setRepeatingRequest(rb.build(), repeatingCallback(), handler)
+        } catch (e: Exception) {
+            Log.w(TAG, "updateManualOnRepeating failed: ${e.message}")
+        }
+    }
+
+    private fun repeatingCallback(): CameraCaptureSession.CaptureCallback? =
+        if (isRecording) recordCaptureCallback else meterCallback
 
     fun setStereoOutput(correction: Boolean, crossEyed: Boolean, swapEyes: Boolean, colourAverage: Boolean = true) {
         this.stereoCorrectionEnabled = correction
@@ -1276,10 +1478,11 @@ class StereoCameraController(
                             setPhysical(this, widePhysicalId, CaptureRequest.DISTORTION_CORRECTION_MODE, CaptureRequest.DISTORTION_CORRECTION_MODE_OFF)
                             setPhysical(this, widePhysicalId, CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
 
+                            applyManualControls(this, isVideo = false)
                             applyTorch(this)
                         }
                         repeatingBuilder = builder
-                        sess.setRepeatingRequest(builder.build(), null, handler)
+                        sess.setRepeatingRequest(builder.build(), meterCallback, handler)
                         // One-time ultrawide priming (optional)
                         if (primeUwOnActiveEnabled) {
                             primeUwPending = true
@@ -1378,6 +1581,7 @@ class StereoCameraController(
                 set(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
                 set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
 
+                applyManualControls(this, isVideo = false)
                 applyTorch(this)
             }
 
@@ -1460,6 +1664,7 @@ class StereoCameraController(
                             setPhysical(this, ultraPhysicalId, CaptureRequest.DISTORTION_CORRECTION_MODE, videoDistortionCorrectionMode)
                             setPhysical(this, ultraPhysicalId, CaptureRequest.EDGE_MODE, videoEdgeMode)
 
+                            applyManualControls(this, isVideo = true, videoFps = requestedRecordFps)
                             applyTorch(this)
                         }
 
@@ -1651,6 +1856,7 @@ class StereoCameraController(
                 set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
 
                 applyCommonNoCropNoStab(this, isVideo = false, targetFps = previewTargetFps, applyFpsRange = false)
+                applyManualControls(this, isVideo = false)
                 applyTorch(this)
 
             }
@@ -1664,6 +1870,12 @@ class StereoCameraController(
                         result: TotalCaptureResult
                     ) {
                         val cap = currentPhoto
+                        // What each lens actually used (useful to confirm Pro / focus settings).
+                        fun d(r: CaptureResult?) = if (r == null) "n/a" else
+                            "iso=${r.get(CaptureResult.SENSOR_SENSITIVITY)} exp=${r.get(CaptureResult.SENSOR_EXPOSURE_TIME)} " +
+                                "focus=${r.get(CaptureResult.LENS_FOCUS_DISTANCE)}"
+                        Log.i(TAG, "Still per lens: main{${d(result.physicalCameraResults[widePhysicalId])}} " +
+                            "ultra{${d(result.physicalCameraResults[ultraPhysicalId])}} logical{${d(result)}}")
                         if (cap != null) {
                             cap.totalResult = result
                             tryFinalizePhotoIfReady()
@@ -1683,7 +1895,7 @@ class StereoCameraController(
                         try {
                             val rb = repeatingBuilder
                             if (rb != null) {
-                                session.setRepeatingRequest(rb.build(), null, handler)
+                                session.setRepeatingRequest(rb.build(), repeatingCallback(), handler)
                             }
                         } catch (_: Exception) {}
                     }
@@ -1706,7 +1918,7 @@ class StereoCameraController(
                         // Best-effort resume repeating
                         try {
                             val rb = repeatingBuilder
-                            if (rb != null) sess.setRepeatingRequest(rb.build(), null, handler)
+                            if (rb != null) sess.setRepeatingRequest(rb.build(), repeatingCallback(), handler)
                         } catch (_: Exception) {}
                     }
                 }, 2500L)
@@ -2131,8 +2343,7 @@ class StereoCameraController(
         applyTorch(rb)
         try {
             //sess.setRepeatingRequest(rb.build(), null, handler)
-            val cb = if (isRecording) recordCaptureCallback else null
-            sess.setRepeatingRequest(rb.build(), cb, handler)
+            sess.setRepeatingRequest(rb.build(), repeatingCallback(), handler)
         } catch (e: Exception) {
             Log.w(TAG, "updateTorchOnRepeating failed: ${e.message}")
         }

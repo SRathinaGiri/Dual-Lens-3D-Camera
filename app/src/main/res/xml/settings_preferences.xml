@@ -52,6 +52,12 @@
             android:title="Make 3D video from a recording"
             android:summary="Align, colour-match and combine a wide + ultrawide recording into one side-by-side 3D video." />
 
+        <ListPreference
+            android:key="main_focus_mode"
+            android:title="Main lens focus"
+            android:dialogTitle="Main lens focus (the ultrawide is always fixed-focus)"
+            android:defaultValue="auto" />
+
         <androidx.preference.SwitchPreferenceCompat
             android:key="stereo_correction"
             android:title="3D correction"

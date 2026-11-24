@@ -63,6 +63,15 @@ object AppSettings {
     const val KEY_PREVIEW_3D_MODE = "preview_3d_mode"         // StereoCameraController.Preview3dMode name
     const val KEY_STEREO_COLOUR_AVERAGE = "stereo_colour_average" // true: both lenses meet at the average colour
 
+    // Main-screen tools
+    const val KEY_SELF_TIMER_SEC = "self_timer_sec"           // 0, 3, 5, 10
+    const val KEY_VIEWFINDER_GUIDE = "viewfinder_guide"       // OFF | GRID | GRID_LEVEL | LEVEL
+    const val KEY_LAPSE_INTERVAL_SEC = "lapse_interval_sec"
+    const val KEY_LAPSE_FRAMES = "lapse_frames"
+    const val KEY_MAIN_FOCUS_MODE = "main_focus_mode"         // auto | match_uw | lock
+    const val KEY_PRO_ISO = "pro_iso"                         // Int, 0 = auto
+    const val KEY_PRO_SHUTTER_NS = "pro_shutter_ns"           // Long, 0 = auto
+
     // Debugging (Advanced)
     const val KEY_DEBUG_VIDEO_LOG_ENABLED = "debug_video_log_enabled"
     const val KEY_DEBUG_VIDEO_LOG_FRAMES_ONLY = "debug_video_log_frames_only"

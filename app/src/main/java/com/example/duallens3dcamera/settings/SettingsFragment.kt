@@ -70,6 +70,16 @@ class SettingsFragment : PreferenceFragmentCompat() {
         edge.entries = arrayOf("Off", "Fast", "High quality")
         edge.entryValues = arrayOf("off", "fast", "hq")
         edge.summaryProvider = ListPreference.SimpleSummaryProvider.getInstance()
+
+        findPreference<ListPreference>(AppSettings.KEY_MAIN_FOCUS_MODE)?.apply {
+            entries = arrayOf(
+                "Auto: keeps focusing on the subject",
+                "Match ultrawide: fixed far focus (landscapes, groups, 3D video)",
+                "Lock at start: focus once when recording or time-lapse starts"
+            )
+            entryValues = arrayOf("auto", "match_uw", "lock")
+            summaryProvider = ListPreference.SimpleSummaryProvider.getInstance()
+        }
     }
 
     private fun setupBitratePref() {
