@@ -8,6 +8,7 @@
 [![Kotlin](https://img.shields.io/badge/Kotlin-Camera2-7F52FF?logo=kotlin&logoColor=white)](app/src/main/java/com/example/duallens3dcamera)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.12-5C3EE8?logo=opencv&logoColor=white)](#3d-correction-photos-and-3d-videos)
 [![Last commit](https://img.shields.io/github/last-commit/SRathinaGiri/Dual-Lens-3D-Camera)](https://github.com/SRathinaGiri/Dual-Lens-3D-Camera/commits/master)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Forked from jcpeterson](https://img.shields.io/badge/fork%20of-jcpeterson%2FDual--Lens--3D--Camera-lightgrey?logo=github)](https://github.com/jcpeterson/Dual-Lens-3D-Camera)
 
 An Android app for taking stereo (3D) photos and videos with a phone's **wide** (main) and
@@ -307,3 +308,9 @@ Without that file the release APK is built unsigned.
 
 See [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) for chronological investigation notes, design
 decisions, failed approaches, validation results, and links back to relevant Git history.
+
+## License
+
+This fork is released under the [MIT License](LICENSE). It builds on
+[jcpeterson/Dual-Lens-3D-Camera](https://github.com/jcpeterson/Dual-Lens-3D-Camera); credit for the
+original app goes to its author.
