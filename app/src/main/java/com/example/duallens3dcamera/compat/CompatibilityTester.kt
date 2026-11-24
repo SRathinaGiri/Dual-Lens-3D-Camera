@@ -110,41 +110,60 @@ class CompatibilityTester(private val context: Context, private val log: (String
             if (rig.logicalIsHidden) notes += "Uses a hidden paired camera (found by probing IDs)."
             log("")
 
-            val camera = open(rig.logicalRearId) ?: run {
-                log("  ✗ Could not open camera ${rig.logicalRearId}.")
-                return Verdict(Support.NO, Support.NO, Support.NO, notes)
-            }
-            try {
-                // 3) Photo pair
-                log("[3] Stereo photo (both lenses in one capture)")
-                val photos = testPhoto(camera, rig, wideChars, ultraChars)
-                log("")
+            // Each step gets a freshly opened camera: a failed session can close the device
+            // (e.g. "Function not implemented (-38)" on the Redmi Note 10 Pro), and later steps
+            // must not inherit that.
+            // 3) Photo pair
+            log("[3] Stereo photo (both lenses in one capture)")
+            val photos = withCamera(rig.logicalRearId) { testPhoto(it, rig, wideChars, ultraChars) }
+            log("")
 
-                // 4) Video
-                log("[4] Stereo video (two encoders, ~1.5 s)")
-                var video = testVideo(camera, rig, wideChars, ultraChars, wideViaLogical = false)
-                if (video == Support.NO) {
-                    log("  Retrying with the main-lens video taken from the paired camera's own stream...")
-                    video = if (testVideo(camera, rig, wideChars, ultraChars, wideViaLogical = true) == Support.YES) {
-                        notes += "Video needs the workaround (main lens from the paired stream); the app applies it automatically for hidden paired cameras."
-                        Support.YES_WITH_WORKAROUND
-                    } else Support.NO
+            // 4) Video
+            log("[4] Stereo video (two encoders, ~1.5 s)")
+            var video = withCamera(rig.logicalRearId) { testVideo(it, rig, wideChars, ultraChars, wideViaLogical = false) }
+            if (video == Support.NO) {
+                log("  Retrying with the main-lens video taken from the paired camera's own stream...")
+                video = if (withCamera(rig.logicalRearId) { testVideo(it, rig, wideChars, ultraChars, wideViaLogical = true) } == Support.YES) {
+                    notes += "Video needs the workaround (main lens from the paired stream); the app applies it automatically for hidden paired cameras."
+                    Support.YES_WITH_WORKAROUND
+                } else Support.NO
+            }
+            log("")
+
+            // 5) Live 3D preview
+            log("[5] Live 3D preview (4 streams)")
+            val live = withCamera(rig.logicalRearId) { testLivePreview(it, rig, wideChars, ultraChars) }
+            log("")
+
+            // The paired camera exists but cannot deliver both lenses: try them as separate cameras.
+            if (photos == Support.NO && video == Support.NO) {
+                log("[2b] Two separate rear cameras at once (paired camera did not work)")
+                if (testSeparatePair(listed + hidden)) {
+                    notes += "The paired camera could not stream both lenses, but the main and ultrawide cameras ran at the same time as separate cameras. " +
+                        "The app does not use this yet; please report this result so a fallback mode can be added."
                 }
                 log("")
-
-                // 5) Live 3D preview
-                log("[5] Live 3D preview (4 streams)")
-                val live = testLivePreview(camera, rig, wideChars, ultraChars)
-                log("")
-                return Verdict(photos, video, live, notes)
-            } finally {
-                camera.close()
             }
+            return Verdict(photos, video, live, notes)
         } catch (e: Exception) {
             log("  ✗ Test stopped: ${e.javaClass.simpleName}: ${e.message}")
             return Verdict(notes = notes + "Test stopped early: ${e.message}")
         } finally {
             thread.quitSafely()
+        }
+    }
+
+    /** Opens [id], runs [step] on it and closes it. Open failures and step exceptions count as NO. */
+    private fun withCamera(id: String, step: (CameraDevice) -> Support): Support {
+        val opened = openDetailed(id)
+        val camera = opened.device ?: run { log("  ✗ Could not open camera $id: ${opened.error}"); return Support.NO }
+        return try {
+            step(camera)
+        } catch (e: Exception) {
+            log("  ✗ Step stopped: ${e.javaClass.simpleName}: ${e.message}")
+            Support.NO
+        } finally {
+            camera.close()
         }
     }
 
@@ -413,7 +432,7 @@ class CompatibilityTester(private val context: Context, private val log: (String
         @Volatile var lostReason: String = ""
     }
 
-    /** Like [open], but reports why opening failed and whether the phone later takes the camera away. */
+    /** Opens a camera, reporting why opening failed and whether the phone later takes the camera away. */
     @SuppressLint("MissingPermission") // The activity checks CAMERA permission before running.
     private fun openDetailed(id: String): OpenResult {
         val result = OpenResult()
@@ -452,18 +471,6 @@ class CompatibilityTester(private val context: Context, private val log: (String
     private fun charsOrNull(id: String): CameraCharacteristics? =
         try { cm.getCameraCharacteristics(id) } catch (_: Exception) { null }
 
-    @SuppressLint("MissingPermission") // The activity checks CAMERA permission before running.
-    private fun open(id: String): CameraDevice? {
-        val latch = CountDownLatch(1)
-        var device: CameraDevice? = null
-        cm.openCamera(id, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) { device = camera; latch.countDown() }
-            override fun onDisconnected(camera: CameraDevice) { camera.close(); latch.countDown() }
-            override fun onError(camera: CameraDevice, error: Int) { camera.close(); latch.countDown() }
-        }, handler)
-        latch.await(5, TimeUnit.SECONDS)
-        return device
-    }
 
     private fun configure(camera: CameraDevice, outputs: List<OutputConfiguration>): CameraCaptureSession? {
         val latch = CountDownLatch(1)

@@ -12,6 +12,25 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Compatibility test: reopen per step, separate-camera fallback
+
+- Prompted by a Redmi Note 10 Pro (`sweet`, Qualcomm, Android 13) report on 0.77.2: paired
+  cameras 5 (0+2) and 6 (0+4) exist, but a session with both physical streams fails with
+  "Error configuring streams: Function not implemented (-38)". That error closed the device, so
+  steps [4] and [5] only reported "CameraDevice was already closed", and [2b] never ran because a
+  paired camera had been found.
+- The tester's own fork (InzamamShaikh567/Dual-Lens-3D-Camera-my-device-fork, private, AGPL-3.0,
+  based on upstream 0.75.1) works on that phone by opening the main and ultrawide as two separate
+  devices on every Xiaomi, plus an OpenGL side-by-side compositor for in-app SBS video. Enabling
+  separate devices for all Xiaomi phones would not suit the Redmi Note 12 Pro, which refuses a
+  second camera ("too many cameras open"). None of their code was copied (license not settled).
+- Steps [3], [4] (both attempts) and [5] now each open the paired camera fresh through
+  `withCamera()`, so one failed session cannot poison later steps. When the paired camera exists
+  but both photo and video fail, [2b] runs as a fallback. The unused `open()` helper was removed.
+- Verified on the Redmi Note 12 Pro (agent build): same results as before (photos YES, video YES
+  with workaround, live preview YES), no FATAL in logcat. The -38 path still needs a Note 10 Pro
+  report.
+
 ## 2026-11-24 - Release 0.77.2
 
 - Version 0.77.2 (versionCode 13): Compatibility test step [2b] for phones without a paired
