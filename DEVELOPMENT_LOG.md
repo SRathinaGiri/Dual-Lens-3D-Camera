@@ -12,6 +12,13 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Release 0.77.0
+
+- Version 0.77.0 (versionCode 11): self-timer, time-lapse, grid and level, icons, landscape labels,
+  main lens focus modes and Pro mode (entries below).
+- `:app:assembleRelease :app:testAgentUnitTest :app:lintRelease` pass; `apksigner` confirms the v2
+  signature with the fork's release certificate (`b9661ab3…6df6d`), so it updates 0.76.x in place.
+
 ## 2026-11-24 - Main lens focus modes and Pro mode (ISO / shutter)
 
 Owner's request: an option to make the main lens's focus match the fixed-focus ultrawide, with
