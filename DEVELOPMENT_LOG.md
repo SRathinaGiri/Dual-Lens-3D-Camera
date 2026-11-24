@@ -12,6 +12,14 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Release 0.77.2
+
+- Version 0.77.2 (versionCode 13): Compatibility test step [2b] for phones without a paired
+  camera (entry below), so the issue #1 tester (Galaxy A72) can report whether two separate rear
+  cameras run together. No capture behavior changed.
+- `:app:assembleRelease :app:testAgentUnitTest :app:lintRelease` pass; `apksigner` confirms the
+  fork's release certificate (`b9661ab3…6df6d`).
+
 ## 2026-11-24 - Compatibility test: two separate rear cameras at once
 
 - Prompted by issue #1 (Samsung Galaxy A72, SM-A725M, Android 17): no `LOGICAL_MULTI_CAMERA`.
