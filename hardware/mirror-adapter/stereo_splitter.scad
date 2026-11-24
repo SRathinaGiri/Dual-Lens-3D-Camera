@@ -246,11 +246,15 @@ module extrude_y(h, y0) {
     translate([0, y0 + h, 0]) rotate([90, 0, 0]) linear_extrude(height = h) children();
 }
 
+// Parts that meet the fixed end cap reach EPS into it, so the union overlaps instead of merely
+// touching (touching faces gave a non-manifold, "mesh is not closed" STL in OpenSCAD 2021.01).
+EPS = 0.01;
+
 module body() {
     difference() {
         union() {
             // Profile without the lens slot: the base is solid except the round lens hole.
-            extrude_y(W, -W / 2) difference() {
+            extrude_y(W + EPS, -W / 2 - EPS) difference() {
                 union() {
                     base2d(); wedge2d();
                     outer_seat_left2d(); mirror([1, 0]) outer_seat_left2d();
@@ -265,7 +269,8 @@ module body() {
                 translate([-base_pad_w / 2, 0]) square([base_pad_w, base_t]);
             // Inner plate spacers: hold the narrower inner mirrors centred in Y from the fixed cap.
             sp = (W - IN_S) / 2 - glue_gap;
-            if (sp > 0.4) extrude_y(sp, -W / 2) {
+            // The two plates meet at a single corner; offset merges them so the extrusion is closed.
+            if (sp > 0.4) extrude_y(sp + EPS, -W / 2 - EPS) offset(delta = EPS) {
                 inner_left_glass2d();
                 inner_right_glass2d();
             }

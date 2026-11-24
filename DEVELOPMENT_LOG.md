@@ -12,6 +12,22 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-25 - Mirror holder: first OpenSCAD render, STL fixed
+
+- First render with the portable OpenSCAD 2021.01 at `D:\OpenSCAD` (machine-specific; not in the
+  repo). `part="body"` exported a broken STL: "The given mesh is not closed" and "may not be a
+  valid 2-manifold". Bisecting showed two causes: (1) the profile extrusion and the inner-mirror
+  spacers only touched the fixed end cap face, and (2) the two inner-glass outlines in the spacer
+  meet at a single corner, giving a pinched polygon.
+- Fix in `stereo_splitter.scad`: parts that meet the fixed cap now reach `EPS` (0.01 mm) into it,
+  and the spacer outline is `offset(delta = EPS)` so the plates merge. Body and cap now export as
+  single manifold solids ("Simple: yes") for custom3/55 and 60, custom2/55 and cart/55 and 60.
+- `verify_profile.py`: custom3 at 55 mm still CLEAN (0 of 738 rays blocked); cart at 60 mm still
+  has the 2 clipping rays noted earlier. Optics unchanged.
+- Not yet addressed: the holder has no way to attach to the phone (it only sits on the camera
+  glass on a pad), and the inner V-mirror wedge is held only by the fixed end cap at one end and
+  the glued cap at the other.
+
 ## 2026-11-25 - Compatibility test: ask the phone before trying ([2a])
 
 - Idea from 3DDualCam's diagnostic. New step [2a] opens the paired camera and calls
