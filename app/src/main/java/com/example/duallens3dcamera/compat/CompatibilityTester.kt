@@ -77,7 +77,7 @@ class CompatibilityTester(private val context: Context, private val log: (String
             }
             try {
                 val sets = cm.concurrentCameraIds
-                if (sets.isNotEmpty()) log("  Concurrent camera sets: ${sets.joinToString { it.sorted().joinToString("+", "{", "}") }}")
+                log("  Concurrent camera sets: ${if (sets.isEmpty()) "none advertised" else sets.joinToString { it.sorted().joinToString("+", "{", "}") }}")
             } catch (_: Exception) {}
             log("")
 
@@ -86,7 +86,15 @@ class CompatibilityTester(private val context: Context, private val log: (String
             val rig = LensDiscovery.discoverStereoRig(cm)
             if (rig == null) {
                 log("  ✗ No rear paired (logical multi-) camera with two lenses was found.")
-                notes += "This phone does not expose two rear lenses together to apps. A mirror adapter on the main camera is the alternative."
+                log("")
+                log("[2b] Two separate rear cameras at once")
+                if (testSeparatePair(listed + hidden)) {
+                    notes += "No paired camera, but the main and ultrawide cameras ran at the same time as separate cameras. " +
+                        "The app does not use this yet; please report this result so a fallback mode can be added."
+                } else {
+                    notes += "This phone does not expose two rear lenses together to apps. A mirror adapter on the main camera is the alternative."
+                }
+                log("")
                 return Verdict(Support.NO, Support.NO, Support.NO, notes)
             }
             val logicalChars = cm.getCameraCharacteristics(rig.logicalRearId)
@@ -275,6 +283,168 @@ class CompatibilityTester(private val context: Context, private val log: (String
         log("  Frames in 1 s: main ${got[0].get()}, ultrawide ${got[1].get()}")
         return if (got[0].get() >= 5 && got[1].get() >= 5) { log("  ✓ Live 3D preview works."); Support.YES }
         else { log("  ✗ Streams did not deliver frames."); Support.NO }
+    }
+
+    /**
+     * For phones without a logical multi-camera: open the main and ultrawide rear cameras as two
+     * independent devices and check that both stream at the same time. Logs open errors, frame
+     * counts, picture detail and the typical time gap between the two cameras' frames.
+     * Returns true when both delivered real frames together.
+     */
+    private fun testSeparatePair(ids: List<String>): Boolean {
+        data class Rear(val id: String, val focal: Float, val chars: CameraCharacteristics)
+        val rears = ids.mapNotNull { id ->
+            val c = charsOrNull(id) ?: return@mapNotNull null
+            if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) return@mapNotNull null
+            val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+            if (!caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE)) return@mapNotNull null
+            val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: return@mapNotNull null
+            Rear(id, focal, c)
+        }
+        // The main camera is the first rear camera listed (Android convention); the ultrawide is
+        // the rear camera with the shortest focal length, if clearly shorter than the main's.
+        val main = rears.firstOrNull()
+        val ultra = if (main == null) null
+            else rears.filter { it.id != main.id && it.focal < main.focal * 0.8f }.minByOrNull { it.focal }
+        if (main == null || ultra == null) {
+            log("  ✗ Could not find separate main and ultrawide rear cameras.")
+            return false
+        }
+        log("  Main = ID ${main.id} (%.2f mm), ultrawide = ID ${ultra.id} (%.2f mm)".format(main.focal, ultra.focal))
+
+        val first = openDetailed(main.id)
+        val mainCam = first.device ?: run { log("  ✗ Could not open main camera ${main.id}: ${first.error}"); return false }
+        try {
+            val second = openDetailed(ultra.id)
+            val ultraCam = second.device ?: run {
+                log("  ✗ The phone refused to open the ultrawide while the main camera was open: ${second.error}")
+                return false
+            }
+            try {
+                Thread.sleep(200)  // let any eviction of the first camera arrive
+                if (first.lost.get()) {
+                    log("  ✗ Opening the ultrawide closed the main camera (${first.lostReason}); only one rear camera can be open at a time.")
+                    return false
+                }
+                log("  ✓ Both cameras opened.")
+                return streamBoth(mainCam, main.chars, ultraCam, ultra.chars, first, second)
+            } finally {
+                ultraCam.close()
+            }
+        } finally {
+            mainCam.close()
+        }
+    }
+
+    private fun streamBoth(mainCam: CameraDevice, mainChars: CameraCharacteristics,
+                           ultraCam: CameraDevice, ultraChars: CameraCharacteristics,
+                           mainOpen: OpenResult, ultraOpen: OpenResult): Boolean {
+        val ms = pickSize(mainChars, ImageFormat.YUV_420_888, 1600)
+        val us = pickSize(ultraChars, ImageFormat.YUV_420_888, 1600)
+        if (ms == null || us == null) { log("  ✗ No YUV sizes."); return false }
+        val readers = listOf(
+            ImageReader.newInstance(ms.width, ms.height, ImageFormat.YUV_420_888, 3),
+            ImageReader.newInstance(us.width, us.height, ImageFormat.YUV_420_888, 3)
+        )
+        // Only touched on [handler].
+        val stamps = listOf(ArrayList<Long>(), ArrayList<Long>())
+        val detail = DoubleArray(2)
+        readers.forEachIndexed { i, r ->
+            r.setOnImageAvailableListener({ rr ->
+                rr.acquireLatestImage()?.use { img ->
+                    stamps[i].add(img.timestamp)
+                    if (stamps[i].size % 5 == 0) detail[i] = lumaStd(img)
+                }
+            }, handler)
+        }
+        try {
+            val s1 = configure(mainCam, listOf(OutputConfiguration(readers[0].surface)))
+                ?: run { log("  ✗ The main camera refused its session."); return false }
+            try {
+                val s2 = configure(ultraCam, listOf(OutputConfiguration(readers[1].surface)))
+                    ?: run { log("  ✗ The ultrawide refused its session while the main camera was set up."); return false }
+                try {
+                    for ((cam, s, r) in listOf(Triple(mainCam, s1, readers[0]), Triple(ultraCam, s2, readers[1]))) {
+                        val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(r.surface) }
+                        s.setRepeatingRequest(req.build(), null, handler)
+                    }
+                    Thread.sleep(2000)
+                    s1.stopRepeating(); s2.stopRepeating()
+                    Thread.sleep(150)
+                } finally {
+                    s2.close()
+                }
+            } finally {
+                s1.close()
+            }
+        } catch (e: Exception) {
+            log("  ✗ Streaming stopped: ${e.javaClass.simpleName}: ${e.message}")
+            return false
+        }
+        // Copy on the handler thread, after any queued listener calls, then close the readers.
+        val copy = CountDownLatch(1)
+        var a: List<Long> = emptyList(); var b: List<Long> = emptyList()
+        val d = DoubleArray(2)
+        handler.post { a = stamps[0].toList(); b = stamps[1].toList(); detail.copyInto(d); copy.countDown() }
+        copy.await(1, TimeUnit.SECONDS)
+        readers.forEach { it.close() }
+        log("  ${ms.width}x${ms.height} + ${us.width}x${us.height} in 2 s: main ${a.size} frames (detail %.1f), ultrawide ${b.size} frames (detail %.1f)"
+            .format(d[0], d[1]))
+        if (mainOpen.lost.get()) { log("  ✗ The phone closed the main camera during the test (${mainOpen.lostReason})."); return false }
+        if (ultraOpen.lost.get()) { log("  ✗ The phone closed the ultrawide during the test (${ultraOpen.lostReason})."); return false }
+        if (a.size < 10 || b.size < 10) { log("  ✗ Not both cameras delivered frames."); return false }
+        if (d[0] < 2.0 || d[1] < 2.0) { log("  ✗ One camera delivered blank frames."); return false }
+        // Typical gap from each main frame to the nearest ultrawide frame (both use the same clock).
+        val sortedB = b.sorted()
+        val gaps = a.map { t ->
+            val i = sortedB.binarySearch(t).let { if (it < 0) -it - 1 else it }
+            listOfNotNull(sortedB.getOrNull(i - 1), sortedB.getOrNull(i)).minOf { abs(it - t) } / 1e6
+        }.sorted()
+        log("  Time gap to the nearest ultrawide frame: median %.1f ms, worst %.1f ms (no hardware sync)"
+            .format(gaps[gaps.size / 2], gaps.last()))
+        log("  ✓ Both rear cameras streamed at the same time as separate cameras.")
+        return true
+    }
+
+    private class OpenResult {
+        @Volatile var device: CameraDevice? = null
+        @Volatile var error: String? = null
+        val lost = java.util.concurrent.atomic.AtomicBoolean(false)
+        @Volatile var lostReason: String = ""
+    }
+
+    /** Like [open], but reports why opening failed and whether the phone later takes the camera away. */
+    @SuppressLint("MissingPermission") // The activity checks CAMERA permission before running.
+    private fun openDetailed(id: String): OpenResult {
+        val result = OpenResult()
+        val latch = CountDownLatch(1)
+        fun fail(camera: CameraDevice, reason: String) {
+            if (result.device != null) { result.lostReason = reason; result.lost.set(true) }
+            else result.error = reason
+            camera.close(); latch.countDown()
+        }
+        try {
+            cm.openCamera(id, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) { result.device = camera; latch.countDown() }
+                override fun onDisconnected(camera: CameraDevice) = fail(camera, "disconnected")
+                override fun onError(camera: CameraDevice, error: Int) = fail(camera, errorName(error))
+            }, handler)
+        } catch (e: Exception) {
+            result.error = "${e.javaClass.simpleName}: ${e.message}"
+            return result
+        }
+        if (!latch.await(5, TimeUnit.SECONDS)) result.error = "timed out"
+        if (result.device == null && result.error == null) result.error = "unknown"
+        return result
+    }
+
+    private fun errorName(code: Int) = when (code) {
+        CameraDevice.StateCallback.ERROR_CAMERA_IN_USE -> "camera in use"
+        CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE -> "too many cameras open"
+        CameraDevice.StateCallback.ERROR_CAMERA_DISABLED -> "camera disabled"
+        CameraDevice.StateCallback.ERROR_CAMERA_DEVICE -> "camera device error"
+        CameraDevice.StateCallback.ERROR_CAMERA_SERVICE -> "camera service error"
+        else -> "error $code"
     }
 
     // ------------------------------------------------------------------ helpers

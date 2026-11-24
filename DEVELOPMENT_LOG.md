@@ -12,6 +12,24 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Compatibility test: two separate rear cameras at once
+
+- Prompted by issue #1 (Samsung Galaxy A72, SM-A725M, Android 17): no `LOGICAL_MULTI_CAMERA`.
+  Its dump lists rear cameras 0 (5.23 mm main), 2 (1.74 mm ultrawide), 52 (tele) and 54 (macro)
+  as separate devices; ID 4 is "system only", and `getConcurrentCameraIds()` is empty. The tester
+  asked for the app to open two cameras anyway.
+- New step [2b] in `CompatibilityTester`, run only when no paired camera is found: picks the first
+  listed rear camera as main and the shortest-focal rear camera (< 0.8x main) as ultrawide, opens
+  both as independent devices, streams ~1600 px YUV from each for 2 s, and reports open errors
+  (e.g. `ERROR_MAX_CAMERAS_IN_USE`), eviction of the first camera, frame counts, blank frames and
+  the median/worst gap between the two cameras' frame timestamps. Step [1] now also prints
+  "Concurrent camera sets: none advertised".
+- This only measures; the app does not yet have a separate-camera capture mode. Even if it works,
+  frames are not hardware-synced, so photos are more realistic than video.
+- Verified on the Redmi with a temporary build that forced [2b] before [2]: opening the ultrawide
+  (ID 2) while the main (ID 0) was open failed with "too many cameras open", the test cleaned up,
+  and steps [2]-[5] still passed. No FATAL in logcat. The success path has not run on hardware yet.
+
 ## 2026-11-24 - Release 0.77.1
 
 - Version 0.77.1 (versionCode 12): Nothing Phone (4a) fixes (entry below).
