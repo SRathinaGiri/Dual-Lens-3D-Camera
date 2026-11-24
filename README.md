@@ -20,10 +20,20 @@ that adds support for phones that hide their dual-lens camera (Redmi Note 12 Pro
 
 ## Supported phones
 
-Tested and working on:
-- **Redmi Note 12 Pro 5G** (`ruby`, HyperOS 2 / Android 14): photos, video, live 3D preview.
-- Samsung S22 (photos only), S24 and Fold5.
-- Pixel 7, 7a, 7 Pro, 8, 8 Pro, 9a and 10.
+### ✅ Tested and working on
+
+| Phone | Chip | Android | 3D photos | 3D video | Live 3D preview | Since |
+|---|---|---|:-:|:-:|:-:|---|
+| **Redmi Note 12 Pro 5G** (`ruby`) | MediaTek Dimensity 1080 | 14 (HyperOS 2) | ✅ | ✅ | ✅ | 0.76.0 |
+| **Nothing Phone (4a)** (A069) | Qualcomm | 17 | ✅ | ✅ | ✅ | 0.77.1 |
+
+Thanks to the testers who tried the app on their phones. More models will be added as reports come in.
+
+Reported working with the original app (not yet re-tested with this fork's 3D correction):
+Samsung S22 (photos only), S24 and Fold5; Pixel 7, 7a, 7 Pro, 8, 8 Pro, 9a and 10.
+
+**Tried it on another phone?** Run the Compatibility test (below), take a 3D photo and a 3D video,
+and send the report and a screenshot of the result. Your model will be added to the table.
 
 Other phones: run **Settings > 3D output > Compatibility test** (see below). It reports whether
 3D photos, 3D video and live 3D preview work, and can share the report.
