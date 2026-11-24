@@ -24,6 +24,9 @@ object LensDiscovery {
 
     private const val TAG = "LensDiscovery"
 
+    /** Sensors smaller than this (mm²) are depth/macro cameras, not ultrawides. */
+    private const val MIN_ULTRAWIDE_SENSOR_MM2 = 8.0f
+
     data class StereoRig(
         val logicalRearId: String,
         val wide1xId: String,
@@ -100,6 +103,60 @@ object LensDiscovery {
             phoneIsAPixel = isPixel,
             assumedDisplayRotation = if (isPixel) Surface.ROTATION_0 else Surface.ROTATION_90,
             logicalIsHidden = logicalRearId !in cameraManager.cameraIdList
+        )
+    }
+
+    /** Main and ultrawide rear cameras that can be opened as two independent devices. */
+    data class SeparatePair(
+        val mainId: String,
+        val ultraId: String,
+        val mainFocalMm: Float,
+        val ultraFocalMm: Float,
+        /**
+         * How much the ultrawide must be enlarged to match the main lens, from focal lengths and
+         * sensor widths (field-of-view ratio). Redmi Note 12 Pro: 1.50 (measured 1.53).
+         */
+        val expectedScale: Double,
+        val phoneIsAPixel: Boolean,
+        val assumedDisplayRotation: Int
+    )
+
+    /**
+     * Picks the lenses for separate-camera mode, for phones without a usable paired camera.
+     * Main = the first non-logical rear camera listed (Android convention); ultrawide = the rear
+     * camera with the shortest focal length, clearly shorter than the main's. Paired (logical)
+     * cameras are skipped. Returns null when there is no such pair. This only reads metadata;
+     * whether both can actually run together is checked by opening them.
+     */
+    fun discoverSeparatePair(cameraManager: CameraManager): SeparatePair? {
+        data class Rear(val id: String, val focal: Float, val sensor: SizeF)
+        val rears = candidateCameraIds(cameraManager).mapNotNull { id ->
+            val c = try { cameraManager.getCameraCharacteristics(id) } catch (_: Exception) { return@mapNotNull null }
+            if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) return@mapNotNull null
+            val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+            if (!caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE)) return@mapNotNull null
+            if (caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)) return@mapNotNull null
+            val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: return@mapNotNull null
+            val sensor = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return@mapNotNull null
+            Rear(id, focal, sensor)
+        }
+        val main = rears.firstOrNull() ?: return null
+        val shorter = rears.filter { it.id != main.id && it.focal < main.focal * 0.8f }
+        // Skip tiny depth/macro sensors (Redmi Note 10 Pro: 2.8x2.1 mm depth at 1.94 mm vs the
+        // 3.67x2.76 mm ultrawide at 1.65 mm), unless nothing larger exists.
+        val real = shorter.filter { it.sensor.width * it.sensor.height >= MIN_ULTRAWIDE_SENSOR_MM2 }
+        val ultra = (real.ifEmpty { shorter }).minByOrNull { it.focal } ?: return null
+        val mainFov = main.sensor.width / main.focal
+        val ultraFov = ultra.sensor.width / ultra.focal
+        val scale = (ultraFov / mainFov).toDouble().coerceIn(1.0, 3.0)
+        val isPixel = isPixelDevice()
+        Log.i(TAG, "Separate pair: main=${main.id} (${main.focal} mm) ultra=${ultra.id} (${ultra.focal} mm) scale=%.3f".format(scale))
+        return SeparatePair(
+            mainId = main.id, ultraId = ultra.id,
+            mainFocalMm = main.focal, ultraFocalMm = ultra.focal,
+            expectedScale = scale,
+            phoneIsAPixel = isPixel,
+            assumedDisplayRotation = if (isPixel) Surface.ROTATION_0 else Surface.ROTATION_90
         )
     }
 

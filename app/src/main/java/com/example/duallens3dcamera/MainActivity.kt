@@ -38,6 +38,9 @@ import com.example.duallens3dcamera.settings.AppSettings
 import com.example.duallens3dcamera.util.ExposureMath
 import com.example.duallens3dcamera.util.LevelMath
 import com.example.duallens3dcamera.settings.SettingsActivity
+import com.example.duallens3dcamera.camera.LensDiscovery
+import com.example.duallens3dcamera.camera.SeparateCameraController
+import com.example.duallens3dcamera.camera.StereoCamera
 import com.example.duallens3dcamera.camera.StereoCameraController
 import com.example.duallens3dcamera.databinding.ActivityMainBinding
 import java.text.SimpleDateFormat
@@ -48,7 +51,9 @@ import kotlin.math.max
 class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var controller: StereoCameraController
+    private lateinit var controller: StereoCamera
+    // True once this run uses separate cameras (no paired camera, or it failed).
+    private var separateCameraMode = false
 
     // ---- persisted settings ----
     private val prefs by lazy { getSharedPreferences(AppSettings.PREFS_NAME, Context.MODE_PRIVATE) }
@@ -169,7 +174,7 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        controller = StereoCameraController(this, this)
+        controller = createController()
 
         // The short top-bar buttons need every pixel for their labels (no default side padding).
         listOf(binding.btnEis, binding.btnPreview3d, binding.btnFormat, binding.btnPro).forEach {
@@ -1073,6 +1078,46 @@ class MainActivity : AppCompatActivity(), StereoCameraController.Callback {
 
     private inline fun onUi(crossinline block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else runOnUiThread { block() }
+    }
+
+    // ---------------- Camera choice ----------------
+
+    private fun cameraManager() = getSystemService(CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+
+    /**
+     * The paired (logical multi-) camera whenever the phone has one, exactly as before. Only
+     * phones without one, or whose paired camera failed this run, use separate cameras.
+     */
+    private fun createController(): StereoCamera {
+        val cm = cameraManager()
+        if (!separateCameraMode && LensDiscovery.discoverStereoRig(cm) != null) {
+            return StereoCameraController(this, this)
+        }
+        val pair = LensDiscovery.discoverSeparatePair(cm)
+        if (pair != null) {
+            separateCameraMode = true
+            return SeparateCameraController(this, this, pair)
+        }
+        // Neither: the paired controller reports that the phone isn't supported.
+        return StereoCameraController(this, this)
+    }
+
+    override fun onPairedCameraFailed(reason: String) = onUi {
+        val pair = if (separateCameraMode) null else LensDiscovery.discoverSeparatePair(cameraManager())
+        if (pair == null) {
+            onError(reason)
+            return@onUi
+        }
+        android.util.Log.w("MainActivity", "Paired camera failed ($reason); switching to separate cameras")
+        controller.stop()
+        previewConfig = null
+        separateCameraMode = true
+        controller = SeparateCameraController(this, this, pair)
+        Toast.makeText(this, "This phone's paired camera didn't work; using the main and ultrawide as separate cameras.",
+            Toast.LENGTH_LONG).show()
+        loadPrefs()
+        updateUi()
+        maybeStartCamera()
     }
 
     // ---------------- StereoCameraController.Callback (force UI thread) ----------------

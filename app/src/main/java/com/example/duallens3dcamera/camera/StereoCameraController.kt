@@ -47,7 +47,7 @@ import android.hardware.camera2.TotalCaptureResult
 class StereoCameraController(
     private val context: Context,
     private val callback: Callback
-) {
+) : StereoCamera {
     interface Callback {
         fun onStatus(msg: String)
         fun onError(msg: String)
@@ -59,6 +59,11 @@ class StereoCameraController(
         fun onPreview3dFrame(bitmap: android.graphics.Bitmap) {}
         /** The phone refused the extra stream needed for live 3D preview. */
         fun onPreview3dUnavailable() {}
+        /**
+         * The paired camera failed before its first session ever worked (e.g. "Function not
+         * implemented (-38)" on the Redmi Note 10 Pro). The app may switch to separate cameras.
+         */
+        fun onPairedCameraFailed(reason: String) { onError(reason) }
     }
 
     /** Live preview modes. */
@@ -174,6 +179,9 @@ class StereoCameraController(
 
     private var cameraDevice: CameraDevice? = null
     private var session: CameraCaptureSession? = null
+    // True once any preview session has worked; failures before that mean the paired camera
+    // itself is unusable on this phone (see Callback.onPairedCameraFailed).
+    @Volatile private var sessionEverConfigured = false
 
     private var surfaceTexture: SurfaceTexture? = null
     private var previewSurface: Surface? = null
@@ -325,7 +333,7 @@ class StereoCameraController(
     private var recordCaptureCallback: CameraCaptureSession.CaptureCallback? = null
     // end logging vars
 
-    fun start(params: StartParams): PreviewConfig {
+    override fun start(params: StartParams): PreviewConfig {
         this.surfaceTexture = params.surfaceTexture
         this.displayRotation = params.displayRotation
         this.isRawMode = params.rawMode
@@ -362,7 +370,7 @@ class StereoCameraController(
         return PreviewConfig(previewSize = previewSize, sensorOrientation = sensorOrientation, recordSize = recordSize)
     }
 
-    fun setVideoConfig(
+    override fun setVideoConfig(
         requestedRecordSize: Size,
         requestedRecordFps: Int,
         videoBitrateBps: Int,
@@ -378,7 +386,7 @@ class StereoCameraController(
         }
     }
 
-    fun setVideoProcessingModes(
+    override fun setVideoProcessingModes(
         noiseReductionMode: Int,
         distortionCorrectionMode: Int,
         edgeMode: Int
@@ -388,7 +396,7 @@ class StereoCameraController(
         this.videoEdgeMode = edgeMode
     }
 
-    fun setDebugConfig(
+    override fun setDebugConfig(
         enableStereoRecordingLog: Boolean,
         stereoLogFramesOnly: Boolean,
         enablePhotoJsonLog: Boolean,
@@ -400,12 +408,12 @@ class StereoCameraController(
         this.enablePhotoSyncToast = enablePhotoSyncToast
     }
 
-    fun setPhotoSaveIndividualLensImages(enabled: Boolean) {
+    override fun setPhotoSaveIndividualLensImages(enabled: Boolean) {
         this.saveIndividualLensImages = enabled
     }
 
     /** Switches the live preview; rebuilds the photo session when the camera is running. */
-    fun setPreview3dMode(mode: Preview3dMode) {
+    override fun setPreview3dMode(mode: Preview3dMode) {
         if (preview3dMode == mode) return
         preview3dMode = mode
         val handler = cameraHandler ?: return
@@ -486,14 +494,14 @@ class StereoCameraController(
         }
     }
 
-    fun setMainFocusMode(mode: MainFocusMode) {
+    override fun setMainFocusMode(mode: MainFocusMode) {
         mainFocusMode = mode
         lockedFocus = null
         cameraHandler?.post { updateManualOnRepeating() }
     }
 
     /** null = automatic. Fixing only one derives the other from the last auto-exposure reading. */
-    fun setProExposure(iso: Int?, exposureNs: Long?) {
+    override fun setProExposure(iso: Int?, exposureNs: Long?) {
         proIso = iso
         proExposureNs = exposureNs
         // Exactly one value fixed: measure the scene again before deriving the other one.
@@ -507,26 +515,26 @@ class StereoCameraController(
     }
 
     /** "Lock at start" focus mode: freeze the main lens at its current autofocus position. */
-    fun lockFocusForSequence() {
+    override fun lockFocusForSequence() {
         if (mainFocusMode != MainFocusMode.LOCK) return
         lockedFocus = meteredMainFocus
         Log.i(TAG, "Focus locked at ${lockedFocus}")
         cameraHandler?.post { updateManualOnRepeating() }
     }
 
-    fun unlockFocusForSequence() {
+    override fun unlockFocusForSequence() {
         if (lockedFocus == null) return
         lockedFocus = null
         cameraHandler?.post { updateManualOnRepeating() }
     }
 
     /** ISO / exposure ranges supported by BOTH lenses (null if unknown). */
-    fun commonIsoRange(): IntRange? = ExposureMath.intersect(
+    override fun commonIsoRange(): IntRange? = ExposureMath.intersect(
         wideChars?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { it.lower..it.upper },
         ultraChars?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)?.let { it.lower..it.upper }
     )
 
-    fun commonExposureRangeNs(): LongRange? = ExposureMath.intersect(
+    override fun commonExposureRangeNs(): LongRange? = ExposureMath.intersect(
         wideChars?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { it.lower..it.upper },
         ultraChars?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)?.let { it.lower..it.upper }
     )
@@ -536,7 +544,7 @@ class StereoCameraController(
             ?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
 
     /** True when Pro mode can work on this phone (both lenses and the logical camera allow manual sensor). */
-    fun proSupported(): Boolean =
+    override fun proSupported(): Boolean =
         supportsManualSensor(wideChars) && supportsManualSensor(ultraChars) &&
             (logicalChars == null || supportsManualSensor(logicalChars)) &&
             commonIsoRange() != null && commonExposureRangeNs() != null
@@ -619,14 +627,14 @@ class StereoCameraController(
     private fun repeatingCallback(): CameraCaptureSession.CaptureCallback? =
         if (isRecording) recordCaptureCallback else meterCallback
 
-    fun setStereoOutput(correction: Boolean, crossEyed: Boolean, swapEyes: Boolean, colourAverage: Boolean = true) {
+    override fun setStereoOutput(correction: Boolean, crossEyed: Boolean, swapEyes: Boolean, colourAverage: Boolean) {
         this.stereoCorrectionEnabled = correction
         this.stereoCrossEyed = crossEyed
         this.stereoSwapEyes = swapEyes
         this.stereoColourAverage = colourAverage
     }
 
-    fun setPrimeUwOnActive(enabled: Boolean) {
+    override fun setPrimeUwOnActive(enabled: Boolean) {
         // Called from UI thread. Marshal to the camera thread to avoid races with session state.
         val handler = cameraHandler
         if (handler != null) {
@@ -773,7 +781,7 @@ class StereoCameraController(
         )
     }
 
-    fun stop() {
+    override fun stop() {
         val handler = cameraHandler ?: return
 
         val latch = CountDownLatch(1)
@@ -806,13 +814,13 @@ class StereoCameraController(
         stopThreads()
     }
 
-    fun setTorch(enabled: Boolean) {
+    override fun setTorch(enabled: Boolean) {
         torchOn = enabled
         val handler = cameraHandler ?: return
         handler.post { updateTorchOnRepeating() }
     }
 
-    fun setPhotoOutputRaw(raw: Boolean) {
+    override fun setPhotoOutputRaw(raw: Boolean) {
         val handler = cameraHandler ?: return
         handler.post {
             // don't change photo settings while recording video
@@ -836,7 +844,7 @@ class StereoCameraController(
      *  - 1x: wide physical ID "2" + ultrawide physical ID "3"
      *  - 2x: wide physical ID "4" (remosaic crop of wide) + ultrawide ID "3" with a 50% centered crop.
      */
-    fun setZoom2x(enabled: Boolean) {
+    override fun setZoom2x(enabled: Boolean) {
         val handler = cameraHandler ?: run {
             callback.onError("Camera thread not running.")
             return
@@ -915,7 +923,7 @@ class StereoCameraController(
         }
     }
 
-    fun captureStereoPhoto(timestampForFilename: String, raw: Boolean) {
+    override fun captureStereoPhoto(timestampForFilename: String, raw: Boolean) {
         val handler = cameraHandler ?: run {
             callback.onError("Camera thread not running.")
             callback.onPhotoCaptureDone()
@@ -994,7 +1002,7 @@ class StereoCameraController(
         }
     }
 
-    fun startRecording(timestampForFilename: String) {
+    override fun startRecording(timestampForFilename: String) {
         val handler = cameraHandler ?: run {
             callback.onError("Camera thread not running.")
             return
@@ -1148,7 +1156,7 @@ class StereoCameraController(
         }
     }
 
-    fun stopRecording() {
+    override fun stopRecording() {
 
         val handler = cameraHandler ?: run {
             callback.onError("Camera thread not running.")
@@ -1375,7 +1383,8 @@ class StereoCameraController(
                 override fun onError(camera: CameraDevice, error: Int) {
                     try { camera.close() } catch (_: Exception) {}
                     cameraDevice = null
-                    callback.onError("Camera error: $error")
+                    if (!sessionEverConfigured) callback.onPairedCameraFailed("Camera error: $error")
+                    else callback.onError("Camera error: $error")
                 }
             }, handler)
         } catch (se: SecurityException) {
@@ -1472,11 +1481,13 @@ class StereoCameraController(
             add(OutputConfiguration(requireNotNull(ultraReader).surface).apply { setPhysicalCameraId(ultraPhysicalId) })
         }
 
+        try {
         camera.createCaptureSessionByOutputConfigurations(
             outputs,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(sess: CameraCaptureSession) {
                     session = sess
+                    sessionEverConfigured = true
                     try {
                         val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                             addTarget(preview)
@@ -1527,11 +1538,18 @@ class StereoCameraController(
                         handler.post { createPreviewSession() }
                         return
                     }
-                    callback.onError("Preview session configure failed.")
+                    if (!sessionEverConfigured) callback.onPairedCameraFailed("Preview session configure failed.")
+                    else callback.onError("Preview session configure failed.")
                 }
             },
             handler
         )
+        } catch (e: Exception) {
+            // Some HALs reject the physical streams synchronously (e.g. CAMERA_ERROR -38).
+            Log.e(TAG, "Preview session creation failed: ${e.message}", e)
+            if (!sessionEverConfigured) callback.onPairedCameraFailed("Preview session failed: ${e.message}")
+            else callback.onError("Preview session failed: ${e.message}")
+        }
     }
 
 

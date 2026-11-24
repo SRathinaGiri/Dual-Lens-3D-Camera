@@ -12,6 +12,40 @@ When adding an entry, capture enough context that a future maintainer or agent c
 - how the result was verified; and
 - which commits, branches, or tags make the work easy to revisit.
 
+## 2026-11-24 - Separate-camera mode (phones without a working paired camera)
+
+- Goal: support phones like the Redmi Note 10 Pro (paired cameras fail with -38) and the Galaxy
+  A72 (no paired camera) without changing anything for phones that work today. Decided with the
+  owner: detection-based, never brand-based (the tester's own fork enables separate devices for
+  every Xiaomi, which would break the Redmi Note 12 Pro: it refuses a second camera).
+- New `StereoCamera` interface (the calls `MainActivity` makes). `StereoCameraController`
+  implements it with declaration-only changes plus one fix: a preview-session failure (thrown
+  synchronously, `onConfigureFailed`, or a device error) *before any session ever worked* now
+  calls `Callback.onPairedCameraFailed` instead of crashing/erroring. Default behavior is the old
+  `onError`.
+- New `SeparateCameraController`: main and ultrawide as two `CameraDevice`s, opened in that order.
+  Main session: preview + YUV still reader; ultrawide session: small keep-alive YUV reader (to keep
+  its 3A running) + YUV still reader. Photos: both still requests sent back to back, pair logged
+  with the timestamp gap, then the existing `StereoSbs` correction/SBS path with
+  `expectedScale` from the lens field-of-view ratio. Video: two sessions, each with its own
+  encoder, both streams started back to back; files named `_wide.mp4`/`_ultrawide.mp4` for
+  "Make 3D video". Torch on the main camera. Not supported: RAW, 2x, Pro, live 3D preview, focus
+  lock, debug logs (reported as unavailable). Default eye layout: main lens left on non-Pixels.
+- `LensDiscovery.discoverSeparatePair`: main = first non-logical rear camera; ultrawide = shortest
+  focal < 0.8x main, skipping sensors under 8 mm² (Note 10 Pro: depth ID 2 at 1.94 mm is 2.8x2.1
+  mm; the real ultrawide is ID 4, 1.65 mm, 3.67x2.76 mm). Scale estimate on the Redmi: 1.500
+  (measured 1.52-1.55). The Compatibility test [2b] uses the same choice.
+- `MainActivity.createController()`: paired controller whenever `discoverStereoRig` finds a rig;
+  separate only without one, or after `onPairedCameraFailed` (switch for this run, with a toast).
+- Known limit: the two cameras start streaming at slightly different times, and "Make 3D video"
+  pairs frames by index, so a separate-mode video can have a small constant time offset. Next step
+  if testers see it: trim both files to a common start timestamp.
+- Verified on the Redmi Note 12 Pro (agent build): still uses paired camera 4; photo corrected SBS
+  at scale 1.523, file saved, no FATAL. A temporary build forcing separate mode: discovery chose
+  main 0 / ultrawide 2 (scale 1.500); opening the ultrawide was refused and closed immediately,
+  the app stayed alive with an error and a black preview, no FATAL. The working separate path still
+  needs a Note 10 Pro / A72 tester.
+
 ## 2026-11-24 - Release 0.77.3
 
 - Version 0.77.3 (versionCode 14): Compatibility test reopens the camera per step and falls back

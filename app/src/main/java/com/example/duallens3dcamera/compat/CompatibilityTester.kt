@@ -88,7 +88,7 @@ class CompatibilityTester(private val context: Context, private val log: (String
                 log("  ✗ No rear paired (logical multi-) camera with two lenses was found.")
                 log("")
                 log("[2b] Two separate rear cameras at once")
-                if (testSeparatePair(listed + hidden)) {
+                if (testSeparatePair()) {
                     notes += "No paired camera, but the main and ultrawide cameras ran at the same time as separate cameras. " +
                         "The app does not use this yet; please report this result so a fallback mode can be added."
                 } else {
@@ -138,7 +138,7 @@ class CompatibilityTester(private val context: Context, private val log: (String
             // The paired camera exists but cannot deliver both lenses: try them as separate cameras.
             if (photos == Support.NO && video == Support.NO) {
                 log("[2b] Two separate rear cameras at once (paired camera did not work)")
-                if (testSeparatePair(listed + hidden)) {
+                if (testSeparatePair()) {
                     notes += "The paired camera could not stream both lenses, but the main and ultrawide cameras ran at the same time as separate cameras. " +
                         "The app does not use this yet; please report this result so a fallback mode can be added."
                 }
@@ -310,26 +310,16 @@ class CompatibilityTester(private val context: Context, private val log: (String
      * counts, picture detail and the typical time gap between the two cameras' frames.
      * Returns true when both delivered real frames together.
      */
-    private fun testSeparatePair(ids: List<String>): Boolean {
-        data class Rear(val id: String, val focal: Float, val chars: CameraCharacteristics)
-        val rears = ids.mapNotNull { id ->
-            val c = charsOrNull(id) ?: return@mapNotNull null
-            if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) return@mapNotNull null
-            val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
-            if (!caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE)) return@mapNotNull null
-            val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: return@mapNotNull null
-            Rear(id, focal, c)
-        }
-        // The main camera is the first rear camera listed (Android convention); the ultrawide is
-        // the rear camera with the shortest focal length, if clearly shorter than the main's.
-        val main = rears.firstOrNull()
-        val ultra = if (main == null) null
-            else rears.filter { it.id != main.id && it.focal < main.focal * 0.8f }.minByOrNull { it.focal }
-        if (main == null || ultra == null) {
+    private fun testSeparatePair(): Boolean {
+        // Same choice as the app's separate-camera mode.
+        val pair = LensDiscovery.discoverSeparatePair(cm) ?: run {
             log("  ✗ Could not find separate main and ultrawide rear cameras.")
             return false
         }
-        log("  Main = ID ${main.id} (%.2f mm), ultrawide = ID ${ultra.id} (%.2f mm)".format(main.focal, ultra.focal))
+        val main = object { val id = pair.mainId; val chars = cm.getCameraCharacteristics(pair.mainId) }
+        val ultra = object { val id = pair.ultraId; val chars = cm.getCameraCharacteristics(pair.ultraId) }
+        log("  Main = ID ${main.id} (%.2f mm), ultrawide = ID ${ultra.id} (%.2f mm), expected scale %.2f"
+            .format(pair.mainFocalMm, pair.ultraFocalMm, pair.expectedScale))
 
         val first = openDetailed(main.id)
         val mainCam = first.device ?: run { log("  ✗ Could not open main camera ${main.id}: ${first.error}"); return false }
